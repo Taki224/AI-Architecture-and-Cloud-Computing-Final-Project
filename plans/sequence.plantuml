@@ -1,0 +1,56 @@
+@startuml
+autonumber
+skinparam backgroundColor white
+skinparam participantBackgroundColor #FEFECE
+skinparam participantBorderColor #A80036
+skinparam arrowColor #A80036
+
+title Dynamic Mode Switching (Fan-In Pattern)
+
+actor "Grid Signal" as Grid
+participant "CarbonController" as Controller
+queue "Pub/Sub\n(edge-commands)" as CmdTopic
+participant "SmartEdgeDevice" as Edge
+queue "Pub/Sub\n(raw-data)" as RawTopic
+participant "CloudProcessor" as CloudAI
+queue "Pub/Sub\n(confirmed-anomalies)" as AnomTopic
+participant "AnomalyLogger" as Logger
+
+== Scenario A: Low Carbon (Performance Mode) ==
+Grid -> Controller : Signal: LOW
+Controller -> CmdTopic : Publish {"mode": "PERFORMANCE"}
+CmdTopic -> Edge : Receive Command
+
+loop Every 100ms
+    Edge -> RawTopic : Stream Raw Data
+    RawTopic -> CloudAI : Trigger
+    activate CloudAI
+    CloudAI -> CloudAI : **Heavy Model (n=200)**
+    
+    alt Anomaly Detected by Cloud?
+        CloudAI -> AnomTopic : **Publish Anomaly**
+        AnomTopic -> Logger : Trigger
+        activate Logger
+        Logger -> Logger : Log Alert (Source: Cloud)
+        deactivate Logger
+    end
+    deactivate CloudAI
+end
+
+== Scenario B: High Carbon (Eco Mode) ==
+Grid -> Controller : Signal: HIGH
+Controller -> CmdTopic : Publish {"mode": "ECO"}
+
+loop Every 100ms
+    Edge -> Edge : **Light Model (n=10)**
+    
+    alt Anomaly Detected by Edge?
+        Edge -> AnomTopic : **Publish Anomaly**
+        AnomTopic -> Logger : Trigger
+        activate Logger
+        Logger -> Logger : Log Alert (Source: Edge)
+        deactivate Logger
+    end
+end
+
+@enduml

@@ -1,0 +1,62 @@
+@startuml
+skinparam classAttributeIconSize 0
+skinparam backgroundColor white
+skinparam classBackgroundColor #FEFECE
+skinparam classBorderColor #A80036
+skinparam arrowColor #A80036
+
+title UML Class Diagram: Architecture
+
+package "Edge Environment (Local Docker)" {
+    class SmartEdgeDevice {
+        - sensor_id : String
+        - current_mode : Mode
+        - light_model : IsolationForest (n=10)
+        + run_loop() : void
+        - generate_synthetic_data() : dict
+        - process_local(data) : void
+        - stream_to_cloud(data) : void
+    }
+}
+
+package "Google Cloud Platform" {
+    
+    class "Cloud Pub/Sub" as PubSub {
+        + topic_raw_stream
+        + topic_anomalies
+        + topic_commands
+    }
+
+    class CloudProcessor {
+        - heavy_model : IsolationForest (n=200)
+        + on_raw_data_received(data) : void
+        - run_inference(data) : Result
+        - publish_anomaly(data) : void
+    }
+
+    class AnomalyLogger {
+        + on_anomaly_received(data) : void
+        + log_to_db() : void
+        + send_alert() : void
+    }
+    
+    class CarbonController {
+        + fetch_grid_signal()
+        + publish_mode_command()
+    }
+}
+
+' Relationships
+SmartEdgeDevice ..> PubSub : Publishes (Raw OR Anomalies)
+SmartEdgeDevice <.. PubSub : Subscribes (Commands)
+
+' THE FIX: CloudProcessor now Publishes to PubSub too
+CloudProcessor <.. PubSub : Subscribes (Raw Stream)
+CloudProcessor ..> PubSub : **Publishes (Anomalies)**
+
+' AnomalyLogger listens to BOTH
+AnomalyLogger <.. PubSub : Subscribes (Anomalies)
+
+CarbonController ..> PubSub : Publishes Commands
+
+@enduml
