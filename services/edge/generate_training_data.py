@@ -24,11 +24,13 @@ def generate_training_data(
     print(f"\nGenerating {num_samples:,} samples...")
     print(f"Output file: {output_file}\n")
     
-    # Initialize sensor with same parameters as GUI
+    # Initialize sensor with higher anomaly rate for better training
+    # Using 15% anomaly rate to give model enough examples to learn from
+    # In real deployment, actual anomaly rate will be much lower (~0.3%)
     sensor = VibrationSensor(
         mean=0.0,
         std_dev=1.0,
-        anomaly_rate=0.003,  # ~2 per minute
+        anomaly_rate=0.15,  # 15% for training (much higher than production)
         small_anomaly_range=(3.0, 4.0),
         large_anomaly_range=(5.0, 8.0),
         large_anomaly_ratio=0.4
@@ -84,14 +86,16 @@ def generate_training_data(
 
 
 if __name__ == "__main__":
-    # Generate 100,000 samples (approximately 2.7 hours of sensor data at 100ms intervals)
-    # This gives ~300 anomalies for training
+    # Generate 100,000 samples with balanced anomaly distribution
+    # This gives ~15,000 anomalies for training (15% rate)
+    # Note: Production anomaly rate is much lower (~0.3%), but training
+    # needs more examples to learn anomaly patterns effectively
     generate_training_data(
         num_samples=100000,
         output_file="training_data.csv"
     )
     
-    # Optionally generate a smaller validation set
+    # Generate validation set with same balanced distribution
     print("\nGenerating validation dataset...")
     generate_training_data(
         num_samples=20000,

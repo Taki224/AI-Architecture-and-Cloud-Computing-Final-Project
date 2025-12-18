@@ -18,18 +18,21 @@ class Application:
     """
     Main GUI application for vibration sensor visualization.
     Displays real-time chart with color-coded anomalies.
+    Supports Pub/Sub status display for PERFORMANCE mode.
     """
     
-    def __init__(self, root: tk.Tk, sensor: VibrationSensor):
+    def __init__(self, root: tk.Tk, sensor: VibrationSensor, pubsub_connected: bool = False):
         """
         Initialize the GUI application.
         
         Args:
             root: The tkinter root window
             sensor: The VibrationSensor instance
+            pubsub_connected: Whether Pub/Sub is connected for PERFORMANCE mode
         """
         self.root = root
         self.sensor = sensor
+        self.pubsub_connected = pubsub_connected
         
         # Configure window
         self.root.title("Edge Device - Vibration Sensor Simulator")
@@ -121,6 +124,15 @@ class Application:
         )
         self.anomaly_label.grid(row=0, column=1, padx=5)
         
+        # Pub/Sub connection status
+        self.pubsub_label = ttk.Label(
+            stats_frame,
+            text="Pub/Sub: " + ("Connected ✓" if self.pubsub_connected else "Disconnected"),
+            font=('Arial', 9),
+            foreground='green' if self.pubsub_connected else 'gray'
+        )
+        self.pubsub_label.grid(row=0, column=2, padx=10)
+        
         # ========== Chart Panel ==========
         chart_frame = ttk.LabelFrame(main_frame, text="Real-Time Vibration Data (30s Window)", padding="10")
         chart_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -200,6 +212,34 @@ class Application:
         self.anomalies.append(is_anomaly)
         self.severities.append(severity)
         
+        # Mode-specific processing
+        if self.sensor.mode == OperationMode.PERFORMANCE:
+            # PERFORMANCE mode: publish to Pub/Sub for cloud processing
+            if self.sensor.pubsub_available:
+                self.sensor.publish_to_pubsub(value)
+            else:
+                # Fallback: log that Pub/Sub is not available
+                if is_anomaly:
+                    print(f"⚠️  [PERFORMANCE Mode] Pub/Sub unavailable - anomaly not sent to cloud")
+        elif self.sensor.mode == OperationMode.ECO:
+            # ECO mode: send data to local ML model API for analysis
+            api_result = self.sensor.run_local_inference(value)
+            if api_result:
+                # Always log API anomaly detections
+                if api_result['is_anomaly']:
+                    print(f"\n🚨 [ECO Mode] ANOMALY DETECTED BY API")
+                    print(f"   Value: {value:.4f}")
+                    print(f"   Anomaly Score: {api_result['anomaly_score']:.4f}")
+                    print(f"   Ground Truth: {'ANOMALY (' + severity + ')' if is_anomaly else 'Normal (False Positive)'}")
+                    print(f"   Timestamp: {time.time():.2f}\n")
+                # Log missed anomalies
+                elif is_anomaly:
+                    print(f"⚠️  [ECO Mode] API missed anomaly (ground truth: {severity}) - Value: {value:.4f}")
+            else:
+                # Log when API call fails
+                if is_anomaly:
+                    print(f"⚠️  [ECO Mode] API not available - missed anomaly: {severity}, Value: {value:.4f}")
+        
         # Update chart
         self._update_chart()
         
@@ -277,10 +317,20 @@ class Application:
         )
         
         # Update anomaly count
-        self.anomaly_label.config(
-            text=f"Anomalies: {stats['total_anomalies']} "
-                 f"({stats['small_anomalies']} small, {stats['large_anomalies']} large)"
-        )
+        api_detected = stats.get('api_anomalies_detected', 0)
+        cloud_detected = stats.get('cloud_anomalies_detected', 0)
+        batches_sent = stats.get('pubsub_batches_sent', 0)
+        
+        anomaly_text = (f"Anomalies: {stats['total_anomalies']} "
+                       f"({stats['small_anomalies']} small, {stats['large_anomalies']} large)")
+        
+        # Add mode-specific detection count
+        if mode == "ECO" and api_detected > 0:
+            anomaly_text += f" | API: {api_detected}"
+        elif mode == "PERFORMANCE":
+            anomaly_text += f" | Cloud: {cloud_detected} | Batches: {batches_sent}"
+        
+        self.anomaly_label.config(text=anomaly_text)
     
     def run(self):
         """Start the GUI main loop"""

@@ -1,0 +1,39 @@
+# Dockerfile for Light Model Service (Edge / Local)
+# REST API for local anomaly detection in ECO mode
+# Also supports Pub/Sub for local multi-instance testing
+
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy and install Python dependencies
+COPY services/light-model/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# Copy the light model service code
+COPY services/light-model/ /app/
+
+# Copy shared model code and trained model files
+COPY models/statistical_model.py /app/
+COPY models/model_light.pkl /app/models/
+COPY models/model_heavy.pkl /app/models/
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV LOAD_MODELS=light
+
+# Expose API port
+EXPOSE 5000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:5000/health || exit 1
+
+# Run the API service
+CMD ["python", "api_service.py"]

@@ -7,56 +7,82 @@ skinparam arrowColor #A80036
 
 title UML Class Diagram: Architecture
 
-package "Edge Environment (Local Docker)" {
-    class SmartEdgeDevice {
-        - sensor_id : String
-        - current_mode : Mode
-        - light_model : IsolationForest (n=10)
-        + run_loop() : void
-        - generate_synthetic_data() : dict
-        - process_local(data) : void
-        - stream_to_cloud(data) : void
+package "Edge Device (Local)" {
+    class VibrationSensor {
+        - mean : float
+        - std_dev : float
+        - anomaly_rate : float
+        - mode : OperationMode
+        + generate_reading() : dict
+        + publish_to_pubsub(data) : void
+        + run_local_inference(data) : Result
     }
+    
+    class PubSubClient {
+        - publisher : SensorPublisher
+        - subscriber : AnomalySubscriber
+        + publish_batch(readings[]) : void
+        + subscribe_results(callback) : void
+    }
+    
+    VibrationSensor --> PubSubClient : uses (PERFORMANCE mode)
 }
+
+package "Light Model Service (Local)" {
+    class LightModelAPI {
+        - light_model : IsolationForest (n=10)
+        + /predict : POST
+        + /health : GET
+        - load_model() : void
+    }
+    
+    class IsolationForestLight {
+        - n_estimators : 10
+        - contamination : 0.003
+        + fit(X) : void
+        + predict(X) : array
+    }
+    
+    LightModelAPI --> IsolationForestLight : uses
+}
+
+VibrationSensor ..> LightModelAPI : REST API (ECO mode)
 
 package "Google Cloud Platform" {
     
     class "Cloud Pub/Sub" as PubSub {
-        + topic_raw_stream
-        + topic_anomalies
-        + topic_commands
+        + sensor-data topic
+        + anomaly-results topic
     }
 
-    class CloudProcessor {
+    class HeavyModelService {
         - heavy_model : IsolationForest (n=200)
-        + on_raw_data_received(data) : void
-        - run_inference(data) : Result
-        - publish_anomaly(data) : void
-    }
-
-    class AnomalyLogger {
-        + on_anomaly_received(data) : void
-        + log_to_db() : void
-        + send_alert() : void
+        + on_sensor_data(batch) : void
+        - process_batch(readings[]) : Result[]
+        - publish_results(results) : void
     }
     
-    class CarbonController {
-        + fetch_grid_signal()
-        + publish_mode_command()
+    class IsolationForestHeavy {
+        - n_estimators : 200
+        - contamination : 0.003
+        + fit(X) : void
+        + predict(X) : array
     }
+    
+    class AnomalyMonitor {
+        + log_anomaly(data) : void
+        + export_metrics() : void
+    }
+    
+    HeavyModelService --> IsolationForestHeavy : uses
+    HeavyModelService --> AnomalyMonitor : logs to
 }
 
 ' Relationships
-SmartEdgeDevice ..> PubSub : Publishes (Raw OR Anomalies)
-SmartEdgeDevice <.. PubSub : Subscribes (Commands)
+PubSubClient ..> PubSub : Publishes sensor data batches
+PubSubClient <.. PubSub : Subscribes to anomaly results
 
-' THE FIX: CloudProcessor now Publishes to PubSub too
-CloudProcessor <.. PubSub : Subscribes (Raw Stream)
-CloudProcessor ..> PubSub : **Publishes (Anomalies)**
-
-' AnomalyLogger listens to BOTH
-AnomalyLogger <.. PubSub : Subscribes (Anomalies)
-
-CarbonController ..> PubSub : Publishes Commands
+HeavyModelService <.. PubSub : Subscribes to sensor-data
+HeavyModelService ..> PubSub : Publishes anomaly results
 
 @enduml

@@ -1,0 +1,11 @@
+# Edge Device Vibration Sensor Simulator Dependencies
+
+# Core GUI and Visualization
+matplotlib>=3.7.0
+numpy>=1.24.0
+
+# API Communication (ECO mode)
+requests>=2.31.0
+
+# Google Cloud Pub/Sub (PERFORMANCE mode)
+google-cloud-pubsub>=2.23.0

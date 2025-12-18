@@ -6,6 +6,17 @@ __pycache__/
 # C extensions
 *.so
 
+# GCP Credentials - NEVER COMMIT
+key.json
+*.json.key
+*-credentials.json
+service-account*.json
+
+# Environment files with secrets
+.env
+.env.local
+.env.production
+
 # Distribution / packaging
 .Python
 build/

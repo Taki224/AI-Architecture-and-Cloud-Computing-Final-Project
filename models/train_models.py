@@ -1,10 +1,11 @@
 """
-Model Training Script for Isolation Forest Anomaly Detection
-Trains both heavy (cloud) and light (edge) models
+Model Training Script for Anomaly Detection
+Trains both heavy (cloud) and light (edge) models using EllipticEnvelope
+which is optimal for Gaussian-distributed sensor data
 """
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import IsolationForest
+from sklearn.covariance import EllipticEnvelope
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_recall_fscore_support
 import joblib
 import time
@@ -39,16 +40,17 @@ def load_data(filepath: str):
     return X, y, df
 
 
-def train_model(X, y, n_estimators: int, model_name: str, contamination: float = 0.003):
+def train_model(X, y, support_fraction: float, model_name: str, contamination: float = 0.01):
     """
-    Train an Isolation Forest model.
+    Train an EllipticEnvelope model.
+    Optimal for Gaussian-distributed sensor data like vibration measurements.
     
     Args:
         X: Training features
         y: Training labels
-        n_estimators: Number of trees in the forest
+        support_fraction: Fraction of points to include in support (higher = more robust)
         model_name: Name for display purposes
-        contamination: Expected proportion of anomalies
+        contamination: Expected proportion of anomalies in NEW data
         
     Returns:
         Trained model
@@ -56,20 +58,17 @@ def train_model(X, y, n_estimators: int, model_name: str, contamination: float =
     print(f"\n{'='*60}")
     print(f"Training {model_name}")
     print(f"{'='*60}")
+    print(f"Model: EllipticEnvelope (optimized for Gaussian data)")
     print(f"Parameters:")
-    print(f"  - n_estimators: {n_estimators}")
+    print(f"  - support_fraction: {support_fraction}")
     print(f"  - contamination: {contamination}")
-    print(f"  - max_samples: auto")
     print(f"  - random_state: 42")
     
     # Initialize model
-    model = IsolationForest(
-        n_estimators=n_estimators,
+    model = EllipticEnvelope(
+        support_fraction=support_fraction,
         contamination=contamination,
-        max_samples='auto',
-        random_state=42,
-        n_jobs=-1,  # Use all CPU cores
-        verbose=0
+        random_state=42
     )
     
     # Train
@@ -160,28 +159,31 @@ def main():
     actual_contamination = sum(y_train == -1) / len(y_train)
     print(f"\nActual contamination rate: {actual_contamination:.4f}")
     
-    # Train heavy model (cloud)
+    # Train heavy model (cloud) - more robust to outliers
     print("\n" + "=" * 60)
     print("STEP 2: Train Heavy Model (Cloud)")
     print("=" * 60)
+    print(f"\nTraining data has {actual_contamination*100:.1f}% anomalies")
+    print("Using support_fraction=0.85 for robust estimation")
+    print("Setting contamination=0.005 (0.5%) for production")
     model_heavy = train_model(
         X_train, 
         y_train, 
-        n_estimators=200, 
-        model_name="Heavy Model (Cloud - 200 estimators)",
-        contamination=actual_contamination
+        support_fraction=0.85,  # Use 85% of data for robust estimate
+        model_name="Heavy Model (Cloud - Robust)",
+        contamination=0.005  # Expect 0.5% anomalies in production
     )
     
-    # Train light model (edge)
+    # Train light model (edge) - faster but slightly less robust
     print("\n" + "=" * 60)
     print("STEP 3: Train Light Model (Edge)")
     print("=" * 60)
     model_light = train_model(
         X_train, 
         y_train, 
-        n_estimators=10, 
-        model_name="Light Model (Edge - 10 estimators)",
-        contamination=actual_contamination
+        support_fraction=0.90,  # Faster fit with 90% support
+        model_name="Light Model (Edge - Fast)",
+        contamination=0.005  # Expect 0.5% anomalies in production
     )
     
     # Validate on validation set
