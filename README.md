@@ -7,7 +7,7 @@
 - [System Architecture](#system-architecture)
   - [Component Diagram](#component-diagram)
   - [Deployment Diagram](#deployment-diagram)
-  - [Sequence Diagrams](#sequence-diagrams)
+  - [Sequence Diagram](#sequence-diagram)
 - [Current Implementation Status](#current-implementation-status)
 - [Roadmap](#roadmap)
 - [Getting Started](#getting-started)
@@ -53,8 +53,6 @@ The system operates in two modes:
 - Light model (10 estimators) performs inference locally
 - Returns prediction immediately
 - <50ms latency, ~85% accuracy
-
-![Sequence Diagram](plans/out/sequence/sequence.png)
 
 ---
 
@@ -110,37 +108,7 @@ The system consists of three main components working together:
 
 ---
 
-### Sequence Diagrams
-
-#### Sequence 1: PERFORMANCE Mode - Cloud Processing
-
-```
-Edge Device → Pub/Sub: Publish 10 readings to sensor-data
-Pub/Sub → Heavy Model: Deliver batch message
-Heavy Model → Heavy Model: Process with 200-estimator model
-Heavy Model → Cloud Logging: Log anomalies
-Heavy Model → Pub/Sub: Publish results to anomaly-results
-Pub/Sub → Edge Device: Deliver results
-Edge Device → GUI: Update display with cloud detections
-```
-
-**Latency**: ~1-2 seconds for batch processing
-**Accuracy**: 95%+ precision, 93%+ recall
-
-#### Sequence 2: ECO Mode - Local Processing
-
-```
-Edge Device → Light Model API: POST /predict {"value": 2.5}
-Light Model API → Isolation Forest: predict([2.5])
-Isolation Forest → Light Model API: {is_anomaly: false, confidence: 0.85}
-Light Model API → Edge Device: Return prediction
-Edge Device → GUI: Update display with local detection
-```
-
-**Latency**: <50ms for single reading
-**Accuracy**: 85% precision, 80% recall
-
-Full sequence diagram:
+### Sequence Diagram
 
 ![Sequence Diagram](plans/out/sequence/sequence.png)
 
