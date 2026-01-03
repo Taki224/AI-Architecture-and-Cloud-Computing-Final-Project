@@ -1,6 +1,6 @@
 # Sequence Diagrams
 
-This document contains UML sequence diagrams showing the runtime interactions between system components. Each diagram focuses on a single scenario with clear actor roles and complete request-response cycles.
+This document contains UML sequence diagrams showing the runtime interactions between system components.
 
 ---
 
@@ -9,147 +9,114 @@ This document contains UML sequence diagrams showing the runtime interactions be
 ```mermaid
 sequenceDiagram
     actor Operator
-    participant GUI as GUI
-    participant Controller as CarbonAwareController
-    participant Sensor as SensorSimulator
-    participant PubSub as PubSubClient
+    participant GUI
+    participant Controller
+    participant Sensor
+    participant PubSub
 
     Operator->>GUI: Launch application
-    activate GUI
-    GUI->>Controller: create()
-    activate Controller
-    Controller->>Sensor: create(μ=0, σ=1, rate=0.003)
-    Sensor-->>Controller: sensor ready
-    Controller->>PubSub: create(project="local-project")
-    PubSub->>PubSub: init publisher (sensor-readings)
-    PubSub->>PubSub: init subscriber (anomaly-results-sub)
-    PubSub-->>Controller: client ready
-    Controller-->>GUI: controller ready
-    deactivate Controller
-    GUI-->>Operator: Display window (1200×700, PERFORMANCE mode)
-    deactivate GUI
+    GUI->>Controller: create
+    Controller->>Sensor: create sensor
+    Sensor-->>Controller: ready
+    Controller->>PubSub: create client
+    PubSub-->>Controller: ready
+    Controller-->>GUI: ready
+    GUI-->>Operator: Display window
 ```
 
 ---
 
-## ECO Mode: Local Inference
+## ECO Mode - Local Inference
 
 When the operator selects ECO mode, each sensor reading is processed locally via REST API.
 
 ```mermaid
 sequenceDiagram
     actor Operator
-    participant GUI as GUI
-    participant Controller as CarbonAwareController
-    participant Sensor as SensorSimulator
-    participant LightAPI as LightModelAPI :5001
-    participant Detector as HybridAnomalyDetector
+    participant GUI
+    participant Controller
+    participant Sensor
+    participant LightAPI
+    participant Detector
 
-    Operator->>GUI: Click "🌱 ECO" toggle
-    GUI->>Controller: set_mode(ECO)
-    Controller-->>GUI: mode = ECO
+    Operator->>GUI: Select ECO mode
+    GUI->>Controller: set_mode ECO
+    Controller-->>GUI: mode changed
     GUI-->>Operator: Show ECO indicator
 
-    Operator->>GUI: Click "▶ Start"
-    activate GUI
+    Operator->>GUI: Start sensor
     
-    loop Every 100ms (10 Hz)
-        GUI->>Controller: tick()
-        Controller->>Sensor: generate_reading()
-        Sensor-->>Controller: value (float)
-        Controller->>GUI: update_chart(value)
+    loop Every 100ms
+        GUI->>Controller: tick
+        Controller->>Sensor: generate_reading
+        Sensor-->>Controller: value
+        Controller->>GUI: update_chart
         
-        Controller->>LightAPI: POST /analyze {"value": v}
-        activate LightAPI
-        LightAPI->>Detector: detect(value)
-        activate Detector
+        Controller->>LightAPI: POST /analyze
+        LightAPI->>Detector: detect
+        Detector-->>LightAPI: result
+        LightAPI-->>Controller: response
         
-        alt Warmup (samples < 100)
-            Detector->>Detector: z_score = |value - μ| / σ
-            Detector-->>LightAPI: {method: "statistical_fallback", z_score}
-        else ML Active
-            Detector->>Detector: extract_features(window)
-            Detector->>Detector: IsolationForest.predict()
-            Detector->>Detector: Z-score check
-            Detector->>Detector: ensemble = OR(ml, stat)
-            Detector-->>LightAPI: {method: "ensemble", is_anomaly, scores}
-        end
-        deactivate Detector
-        
-        LightAPI-->>Controller: {is_anomaly, method, anomaly_score, z_score}
-        deactivate LightAPI
-        
-        alt is_anomaly = true
-            Controller->>GUI: show_alert(prediction)
-            GUI-->>Operator: Display anomaly indicator
+        alt is_anomaly true
+            Controller->>GUI: show_alert
+            GUI-->>Operator: Display anomaly
         end
     end
-    deactivate GUI
 ```
 
 ---
 
-## PERFORMANCE Mode: Cloud Batch Processing
+## PERFORMANCE Mode - Cloud Batch Processing
 
 When the operator selects PERFORMANCE mode, readings are batched and sent to the cloud via Pub/Sub.
 
 ```mermaid
 sequenceDiagram
     actor Operator
-    participant GUI as GUI
-    participant Controller as CarbonAwareController
-    participant Sensor as SensorSimulator
-    participant PubSub as PubSubClient
-    participant Topic as sensor-readings
-    participant Heavy as HeavyModelService :8080
-    participant Detector as HybridAnomalyDetector
-    participant Results as anomaly-results
+    participant GUI
+    participant Controller
+    participant Sensor
+    participant PubSub
+    participant Topic
+    participant Heavy
+    participant Results
 
-    Operator->>GUI: Click "⚡ PERFORMANCE" toggle
-    GUI->>Controller: set_mode(PERFORMANCE)
-    Controller-->>GUI: mode = PERFORMANCE
+    Operator->>GUI: Select PERFORMANCE mode
+    GUI->>Controller: set_mode PERFORMANCE
+    Controller-->>GUI: mode changed
     GUI-->>Operator: Show PERFORMANCE indicator
 
-    Operator->>GUI: Click "▶ Start"
-    activate GUI
+    Operator->>GUI: Start sensor
     
-    loop Every 100ms (10 Hz)
-        GUI->>Controller: tick()
-        Controller->>Sensor: generate_reading()
-        Sensor-->>Controller: value (float)
-        Controller->>GUI: update_chart(value)
-        Controller->>PubSub: add_to_batch(value, timestamp)
+    loop Every 100ms
+        GUI->>Controller: tick
+        Controller->>Sensor: generate_reading
+        Sensor-->>Controller: value
+        Controller->>GUI: update_chart
+        Controller->>PubSub: add_to_batch
         
-        alt Batch size = 10
-            PubSub->>Topic: publish(batch)
+        alt Batch size equals 10
+            PubSub->>Topic: publish batch
             Topic-->>PubSub: ack
         end
     end
 
     Note over Topic,Heavy: Async cloud processing
     
-    Topic->>Heavy: deliver(batch message)
-    activate Heavy
-    
-    loop For each reading in batch
-        Heavy->>Detector: detect(value)
-        Detector-->>Heavy: {is_anomaly, method, scores}
-    end
-    
-    Heavy->>Results: publish(predictions)
+    Topic->>Heavy: deliver batch
+    Heavy->>Heavy: detect all values
+    Heavy->>Results: publish predictions
     Results-->>Heavy: ack
-    deactivate Heavy
 
-    Results->>PubSub: deliver(predictions)
-    PubSub->>Controller: on_results(predictions)
+    Results->>PubSub: deliver predictions
+    PubSub->>Controller: on_results
     
     loop For each prediction
-        alt is_anomaly = true
-            Controller->>GUI: show_alert(prediction)
-            GUI-->>Operator: Display anomaly indicator
+        alt is_anomaly true
+            Controller->>GUI: show_alert
+            GUI-->>Operator: Display anomaly
         end
     end
-    deactivate GUI
 ```
 
 ---
@@ -159,27 +126,27 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     actor Operator
-    participant GUI as GUI
-    participant Controller as CarbonAwareController
-    participant PubSub as PubSubClient
-    participant LightAPI as LightModelAPI :5001
+    participant GUI
+    participant Controller
+    participant PubSub
+    participant LightAPI
 
     alt Toggle to PERFORMANCE
         Operator->>GUI: Click mode button
-        GUI->>Controller: set_mode(PERFORMANCE)
-        Controller->>PubSub: enable_batching()
-        PubSub-->>Controller: batching enabled
-        Controller-->>GUI: mode = PERFORMANCE
-        GUI-->>Operator: Show "⚡ PERFORMANCE"
+        GUI->>Controller: set_mode PERFORMANCE
+        Controller->>PubSub: enable_batching
+        PubSub-->>Controller: enabled
+        Controller-->>GUI: mode PERFORMANCE
+        GUI-->>Operator: Show PERFORMANCE
     else Toggle to ECO
         Operator->>GUI: Click mode button
-        GUI->>Controller: set_mode(ECO)
-        Controller->>PubSub: flush_remaining_batch()
-        PubSub-->>Controller: batch flushed
+        GUI->>Controller: set_mode ECO
+        Controller->>PubSub: flush_batch
+        PubSub-->>Controller: flushed
         Controller->>LightAPI: GET /health
-        LightAPI-->>Controller: {status: "healthy", ml_fitted: bool}
-        Controller-->>GUI: mode = ECO
-        GUI-->>Operator: Show "🌱 ECO"
+        LightAPI-->>Controller: healthy
+        Controller-->>GUI: mode ECO
+        GUI-->>Operator: Show ECO
     end
 ```
 
@@ -191,55 +158,44 @@ This diagram shows how the HybridAnomalyDetector transitions from statistical-on
 
 ```mermaid
 sequenceDiagram
-    participant Caller as API/Service
-    participant Hybrid as HybridAnomalyDetector
-    participant IsoForest as IsolationForestDetector
-    participant Stat as StatisticalAnomalyDetector
+    participant Caller
+    participant Hybrid
+    participant IsoForest
+    participant Stat
 
-    Note over Hybrid: Warmup Phase (samples 1-99)
+    Note over Hybrid: Warmup Phase samples 1 to 99
     
-    loop Samples 1-99
-        Caller->>Hybrid: detect(value)
-        activate Hybrid
-        Hybrid->>IsoForest: detect(value)
-        IsoForest->>IsoForest: training_data.append(value)
-        IsoForest-->>Hybrid: {status: "warming_up", samples: N/100}
-        Hybrid->>Stat: predict(value)
-        Stat->>Stat: z = |value - μ| / σ
-        Stat-->>Hybrid: z_score, is_anomaly
-        Hybrid-->>Caller: {method: "statistical_fallback", is_anomaly, z_score}
-        deactivate Hybrid
+    loop Samples 1 to 99
+        Caller->>Hybrid: detect value
+        Hybrid->>IsoForest: detect value
+        IsoForest->>IsoForest: collect training data
+        IsoForest-->>Hybrid: warming_up
+        Hybrid->>Stat: predict value
+        Stat-->>Hybrid: z_score
+        Hybrid-->>Caller: statistical_fallback result
     end
 
-    Note over IsoForest: Sample 100: Training trigger
+    Note over IsoForest: Sample 100 Training trigger
     
-    Caller->>Hybrid: detect(value)
-    activate Hybrid
-    Hybrid->>IsoForest: detect(value)
-    activate IsoForest
-    IsoForest->>IsoForest: _fit_model() on 100 samples
-    IsoForest-->>Hybrid: {status: "just_fitted"}
-    deactivate IsoForest
-    Hybrid->>Stat: predict(value)
-    Stat-->>Hybrid: z_score, stat_anomaly
-    Hybrid->>Hybrid: ensemble = OR(ml_anomaly, stat_anomaly)
-    Hybrid-->>Caller: {method: "ensemble", is_anomaly, scores}
-    deactivate Hybrid
+    Caller->>Hybrid: detect value
+    Hybrid->>IsoForest: detect value
+    IsoForest->>IsoForest: fit_model
+    IsoForest-->>Hybrid: just_fitted
+    Hybrid->>Stat: predict value
+    Stat-->>Hybrid: z_score
+    Hybrid->>Hybrid: ensemble OR
+    Hybrid-->>Caller: ensemble result
 
-    Note over Hybrid: Active Phase (samples 101+)
+    Note over Hybrid: Active Phase samples 101 plus
     
     loop Subsequent samples
-        Caller->>Hybrid: detect(value)
-        activate Hybrid
-        Hybrid->>IsoForest: detect(value)
-        IsoForest->>IsoForest: update sliding window
-        IsoForest->>IsoForest: extract features
-        IsoForest->>IsoForest: model.predict()
-        IsoForest-->>Hybrid: {is_anomaly, anomaly_score, status: "active"}
-        Hybrid->>Stat: predict(value)
-        Stat-->>Hybrid: z_score, stat_anomaly
-        Hybrid->>Hybrid: ensemble = OR(ml_anomaly, stat_anomaly)
-        Hybrid-->>Caller: {method: "ensemble", is_anomaly, scores}
-        deactivate Hybrid
+        Caller->>Hybrid: detect value
+        Hybrid->>IsoForest: detect value
+        IsoForest->>IsoForest: predict
+        IsoForest-->>Hybrid: ml_anomaly score
+        Hybrid->>Stat: predict value
+        Stat-->>Hybrid: stat_anomaly
+        Hybrid->>Hybrid: ensemble OR
+        Hybrid-->>Caller: ensemble result
     end
 ```

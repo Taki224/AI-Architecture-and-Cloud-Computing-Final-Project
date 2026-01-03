@@ -258,25 +258,23 @@ sequenceDiagram
     participant GUI
     participant Controller
     participant Sensor
-    participant LightAPI as LightModelAPI :5001
+    participant LightAPI
 
-    Operator->>GUI: Start sensor (ECO mode)
-    activate GUI
+    Operator->>GUI: Start sensor ECO mode
     
     loop Every 100ms
-        GUI->>Controller: tick()
-        Controller->>Sensor: generate_reading()
+        GUI->>Controller: tick
+        Controller->>Sensor: generate_reading
         Sensor-->>Controller: value
-        Controller->>GUI: update_chart(value)
-        Controller->>LightAPI: POST /analyze {value}
-        LightAPI-->>Controller: {is_anomaly, method, scores}
+        Controller->>GUI: update_chart
+        Controller->>LightAPI: POST /analyze
+        LightAPI-->>Controller: response
         
-        alt is_anomaly = true
-            Controller->>GUI: show_alert()
+        alt is_anomaly true
+            Controller->>GUI: show_alert
             GUI-->>Operator: Display anomaly
         end
     end
-    deactivate GUI
 ```
 
 For PERFORMANCE mode, readings are batched (10 readings) and sent via Pub/Sub to the cloud heavy-model-service, which returns predictions asynchronously.
