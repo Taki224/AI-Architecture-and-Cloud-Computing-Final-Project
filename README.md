@@ -467,7 +467,6 @@ FinalProject/
 ├── services/
 │   ├── edge/                    # Edge device application
 │   │   ├── local_sensor_gui.py  # Unified GUI + sensor + Pub/Sub
-│   │   ├── generate_training_data.py
 │   │   └── requirements.txt
 │   ├── light-model/             # Local REST API service (ECO mode)
 │   │   ├── api_service.py
@@ -487,9 +486,10 @@ FinalProject/
 │   ├── train_models.py
 │   ├── hybrid_detector.py
 │   ├── isolation_forest_detector.py
-│   └── statistical_model.py
+|.  ├── statistical_model.py
+│   └── data/
+|.      └── generate_training_data.py
 ├── docs/                        # Documentation
-│   ├── LOCAL_SETUP.md          # Local Docker setup
 │   └── GCP_SETUP.md            # Cloud deployment guide
 ├── plans/                       # Architecture diagrams (Mermaid)
 ├── docker-compose.yml          # Local light-model service
