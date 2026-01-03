@@ -17,42 +17,126 @@
 
 ## Project Overview
 
-The **Carbon-Aware IoT Anomaly Detection System** is a hybrid edge-cloud solution that dynamically optimizes ML model deployment based on electricity grid carbon intensity. The system demonstrates sustainable computing practices by adapting its behavior to minimize carbon emissions while maintaining operational reliability.
+The **Carbon-Aware IoT Anomaly Detection System** is a hybrid edge-cloud platform for **industrial vibration sensor monitoring**. It detects mechanical anomalies (bearing failures, shaft imbalance, resonance issues) in rotating machinery by analyzing vibration amplitude signals.
 
-### Core Concept
+### Signal Characteristics
 
-Traditional IoT systems continuously stream data to the cloud regardless of environmental impact. Our system implements **carbon-aware computing** by:
+The system processes vibration sensor readings with the following characteristics:
+- **Normal operation:** Gaussian distribution (μ=0, σ=1)
+- **Anomaly rate:** ~0.3% of readings (approximately 2 anomalies per minute at 10 Hz sampling)
+- **Small anomalies:** 3.0σ to 4.0σ deviation (60% of anomalies)—early warning indicators
+- **Large anomalies:** 5.0σ to 8.0σ deviation (40% of anomalies)—critical failures
 
-1. **PERFORMANCE Mode (Low Carbon)**: When grid carbon intensity is low (renewable energy available), stream sensor data to the cloud via Google Cloud Pub/Sub for processing with a heavy, high-accuracy model.
+### Dual-Mode Carbon-Aware Processing
 
-2. **ECO Mode (High Carbon)**: When grid carbon intensity is high (fossil fuel dependency), process data locally using a lightweight model to minimize data transmission and cloud computing.
+The system implements two processing modes, manually selectable via GUI. Both modes use a **Hybrid ML approach** combining Isolation Forest with Z-score statistical detection:
 
-This approach reduces carbon emissions by up to 40% during high-carbon periods while maintaining anomaly detection capabilities, demonstrating the feasibility of sustainability-aware system design.
+1. **PERFORMANCE Mode:** Batches 10 readings and publishes to Google Cloud Pub/Sub for cloud inference using a **200-estimator Isolation Forest** + Z-score ensemble. Optimized for accuracy when cloud resources are available.
 
-### Key Innovation
+2. **ECO Mode:** Processes each reading locally via REST API (port 5001) using a **100-estimator Isolation Forest** + Z-score ensemble. Balances accuracy with reduced cloud compute.
 
-The system showcases **dynamic runtime adaptation** - switching between edge and cloud processing based on real-time environmental signals, rather than static deployment decisions. This represents a paradigm shift in IoT architecture where sustainability becomes a first-class system requirement.
+### ML Detection Strategy
+
+| Component | Isolation Forest | Z-Score | Ensemble Logic |
+|-----------|-----------------|---------|----------------|
+| Light (ECO) | 100 estimators | 3.0σ threshold | Flag if EITHER triggers |
+| Heavy (PERFORMANCE) | 200 estimators | 3.0σ threshold | Flag if EITHER triggers |
+
+**Warmup Phase:** First 100 samples use statistical-only detection while the Isolation Forest model trains on incoming data. After warmup, the full ensemble activates.
+
+### Carbon Awareness Roadmap
+
+Mode switching is **always manual** (operator toggles via GUI). Phase 4 will integrate a Python library for carbon consumption measurement, enabling:
+- Per-mode carbon metrics logging (gCO₂e per inference)
+- Data-driven comparison of PERFORMANCE vs ECO carbon footprints
+- Visibility into the environmental impact of each processing mode
+
+Note: Carbon measurement is for **observability only**—the system will not automatically switch modes based on carbon intensity.
 
 ---
 
 ## Architecturally Significant Use Cases
 
-### Dual-Mode Anomaly Detection
+### UC-1: Real-Time Vibration Monitoring
 
-The system operates in two modes:
+**Responsibilities:**
+- Sample vibration sensor at 10 Hz (100ms intervals)
+- Display 30-second sliding window (300 data points) in real-time GUI
+- Detect anomalies within latency constraints per mode
 
-**PERFORMANCE Mode (Cloud Processing)**:
-- Edge device batches 10 sensor readings
-- Publishes to `sensor-data` Pub/Sub topic
-- Heavy model service (200 estimators) processes batch on Cloud Run
-- Returns predictions via `anomaly-results` topic
-- ~1-2 second latency, 95%+ accuracy
+**Quality Attributes:**
+| Attribute | PERFORMANCE Mode | ECO Mode |
+|-----------|------------------|----------|
+| Sampling Rate | 10 readings/second | 10 readings/second |
+| Detection Latency | 1-2 seconds (batch + cloud) | <100ms (local REST) |
+| GUI Update | 100ms interval | 100ms interval |
 
-**ECO Mode (Local Processing)**:
-- Edge device sends reading to local REST API (localhost:5001)
-- Light model (10 estimators) performs inference locally
-- Returns prediction immediately
-- <50ms latency, ~85% accuracy
+**Constraints:**
+- GUI window: 1200×700 pixels, Y-axis range: -10 to +10
+- Maximum data points in memory: 300 (30-second window)
+
+---
+
+### UC-2: Cloud Batch Processing (PERFORMANCE Mode)
+
+**Responsibilities:**
+- Aggregate readings into batches of 10
+- Publish to `sensor-readings` Pub/Sub topic
+- Receive predictions from `anomaly-results` subscription
+- Display anomaly alerts with confidence scores
+
+**Quality Attributes:**
+| Attribute | Value |
+|-----------|-------|
+| Batch Size | 10 readings |
+| Publish Timeout | 5 seconds |
+| Cloud Processing Timeout | 10 seconds |
+| Confidence Score Range | 0.0 (normal) to 1.0 (anomalous) |
+
+**Constraints:**
+- Project ID: `local-project` (emulator) or GCP project
+- Topics: `sensor-readings`, `anomaly-results`
+- Subscription: `anomaly-results-sub`
+
+---
+
+### UC-3: Local Inference (ECO Mode)
+
+**Responsibilities:**
+- Send individual readings to local REST API
+- Perform hybrid anomaly detection (Isolation Forest + Z-score ensemble)
+- Return immediate prediction without cloud dependency
+
+**Quality Attributes:**
+| Attribute | Value |
+|-----------|-------|
+| API Endpoint | `POST /analyze` on localhost:5001 |
+| Request Timeout | 2 seconds |
+| Detection Method | Hybrid: Isolation Forest (100 estimators) + Z-score (3.0σ) |
+| Ensemble Logic | Flag anomaly if EITHER detector triggers |
+| Response Time | <50ms |
+| Warmup Period | First 100 samples (statistical fallback) |
+
+**Constraints:**
+- Requires `light-model-service` container running
+- First 100 samples use statistical-only detection during ML warmup
+
+---
+
+### UC-4: Mode Switching
+
+**Responsibilities:**
+- Allow operator to toggle between PERFORMANCE and ECO modes
+- Flush pending batch when switching to ECO
+- Verify light-model health when switching to ECO
+
+**Quality Attributes:**
+- Mode switch latency: <1 second
+- Visual feedback: Mode indicator updates immediately
+
+**Constraints:**
+- Manual toggle only (all phases)
+- Carbon measurement (Phase 4) is for observability, not automated switching
 
 ---
 
@@ -62,55 +146,156 @@ The system operates in two modes:
 
 The system consists of three main components working together:
 
-![Component Diagram](plans/out/uml/uml.png)
+```mermaid
+flowchart TB
+    subgraph Edge["Edge Device (Native Python)"]
+        GUI["local_sensor_gui.py<br/>Tkinter + Matplotlib"]
+        Sensor["VibrationSensor<br/>μ=0, σ=1"]
+        PubSubClient["PubSubClient<br/>batch_size=10"]
+    end
 
-#### Edge Device (Local)
-- **VibrationSensor**: Generates realistic sensor data (μ=0, σ=1) with injected anomalies (~0.3% rate)
-- **PubSubClient**: Publishes batched readings to cloud, subscribes to results
-- **GUI**: Real-time visualization with mode toggle and statistics
+    subgraph LocalDocker["Local Docker"]
+        LightAPI["light-model-service<br/>Port 5001<br/>IsolationForest (100)"]
+    end
 
-#### Light Model Service (Local)
-- **LightModelAPI**: Flask REST API for ECO mode inference
-- **IsolationForestLight**: 10-estimator model, fast inference (<50ms)
-- Port: 5001
+    subgraph GCP["GCP Cloud"]
+        CloudPubSub["Cloud Pub/Sub<br/>sensor-readings<br/>anomaly-results"]
+        HeavyService["heavy-model-service<br/>Cloud Run :8080<br/>HybridDetector (200)"]
+    end
 
-#### Heavy Model Service (GCP Cloud Run)
-- **HeavyModelService**: Pub/Sub subscriber processing batched sensor data
-- **IsolationForestHeavy**: 200-estimator model, high accuracy (95%+)
-- **AnomalyMonitor**: Cloud Logging and Monitoring integration
-- Port: 8080
+    GUI <--> Sensor
+    GUI <--> PubSubClient
+    
+    GUI -->|"ECO mode<br/>POST /analyze"| LightAPI
+    LightAPI -->|"response"| GUI
+    
+    PubSubClient -->|"PERFORMANCE mode<br/>Publish batch"| CloudPubSub
+    CloudPubSub --> HeavyService
+    HeavyService --> CloudPubSub
+    CloudPubSub -->|"anomaly-results"| PubSubClient
+```
 
-#### Cloud Pub/Sub
-- **sensor-data topic**: Edge → Cloud (batched readings)
-- **anomaly-results topic**: Cloud → Edge (predictions with confidence)
+#### Edge Device (Native Python)
+- **local_sensor_gui.py**: Unified edge application combining:
+  - Tkinter + Matplotlib visualization (1200×700, 100ms updates)
+  - `VibrationSensor`: Generates readings (μ=0, σ=1, anomaly_rate=0.3%)
+  - `PubSubClient`: Batches 10 readings, 5s publish timeout
+  - `Application`: GUI with mode toggle (PERFORMANCE/ECO)
+
+#### Light Model Service (Local Docker: port 5001)
+- **Flask API**: `/health`, `/analyze`, `/analyze/batch`, `/stats`, `/reset`
+- **IsolationForestDetector**: Sliding window features (50 samples), 100 estimators
+- Runs locally via Docker Compose for ECO mode processing
+
+#### Heavy Model Service (GCP Cloud Run: port 8080)
+- **Pub/Sub Subscriber**: Listens to `sensor-readings-sub` in GCP
+- **HybridAnomalyDetector**: Isolation Forest (200 estimators) + Z-score (3.0σ)
+- **IsolationForestDetector**: Heavier model for cloud processing
+- **AnomalyMonitor**: 60-second rolling window, Cloud Logging integration
+- Deployed to GCP Cloud Run for PERFORMANCE mode (not included in local docker-compose)
+
+#### Pub/Sub Topics
+- `sensor-readings`: Edge → Cloud (batched readings)
+- `anomaly-results`: Cloud → Edge (predictions with confidence)
 
 ---
 
 ### Deployment Diagram
 
-![Deployment Diagram](plans/out/development/development.png)
+```mermaid
+flowchart TB
+    subgraph Local["Local Development"]
+        EdgeApp["Edge Device<br/>local_sensor_gui.py<br/>(Native Python)"]
+        
+        subgraph Docker["Docker Compose"]
+            LightService["light-model-service<br/>Port 5001"]
+        end
+    end
 
-#### Local Development Environment
-- **Docker Compose**: Orchestrates Pub/Sub emulator, light model, heavy model (simulation)
-- **Pub/Sub Emulator**: Local testing without GCP costs (port 8085)
-- **Edge Device**: Runs natively for GUI display support
+    subgraph GCP["GCP Production"]
+        PubSub["Cloud Pub/Sub"]
+        CloudRun["Cloud Run<br/>heavy-model-service<br/>Auto-scale 0-10"]
+        Logging["Cloud Logging"]
+        Monitoring["Cloud Monitoring"]
+    end
+
+    EdgeApp -->|"ECO mode"| LightService
+    EdgeApp -->|"PERFORMANCE mode"| PubSub
+    PubSub <--> CloudRun
+    CloudRun --> Logging
+    CloudRun --> Monitoring
+```
+
+#### Local Development Environment (Docker Compose)
+| Container | Port Mapping | Health Check |
+|-----------|--------------|---------------|
+| `light-model-service` | 5001:5000 | 10s interval, 5 retries |
+
+Network: `carbon-aware-network`
+
+**Note:** Only the light-model-service runs locally via Docker Compose. The heavy-model-service and Pub/Sub run in GCP (see [docs/GCP_SETUP.md](docs/GCP_SETUP.md)).
 
 #### Production GCP Environment
-- **Cloud Run**: Serverless container hosting for heavy model (auto-scaling 0-10 instances)
-- **Cloud Pub/Sub**: Managed message broker (99.9% SLA)
+- **Cloud Run**: Auto-scaling 0-10 instances, 512MB memory
+- **Cloud Pub/Sub**: Managed broker (99.9% SLA)
 - **Artifact Registry**: Docker image storage
-- **Cloud Logging**: Structured log aggregation
-- **Cloud Monitoring**: Metrics and alerting
+- **Cloud Logging**: Structured JSON logs
+- **Cloud Monitoring**: `anomaly_detection/rate` custom metric
 
-#### Edge Locations
-- Raspberry Pi or similar edge devices running VibrationSensor
-- Connects to either local light model (ECO) or cloud via Pub/Sub (PERFORMANCE)
+#### Edge Deployment
+- Raspberry Pi or similar devices running edge Python application
+- Connects to local containers (dev) or GCP services (prod)
 
 ---
 
 ### Sequence Diagram
 
-![Sequence Diagram](plans/out/sequence/sequence.png)
+The following diagram shows the main interaction flow for ECO mode (local inference):
+
+```mermaid
+sequenceDiagram
+    actor Operator
+    participant GUI
+    participant Controller
+    participant Sensor
+    participant LightAPI as LightModelAPI :5001
+
+    Operator->>GUI: Start sensor (ECO mode)
+    activate GUI
+    
+    loop Every 100ms
+        GUI->>Controller: tick()
+        Controller->>Sensor: generate_reading()
+        Sensor-->>Controller: value
+        Controller->>GUI: update_chart(value)
+        Controller->>LightAPI: POST /analyze {value}
+        LightAPI-->>Controller: {is_anomaly, method, scores}
+        
+        alt is_anomaly = true
+            Controller->>GUI: show_alert()
+            GUI-->>Operator: Display anomaly
+        end
+    end
+    deactivate GUI
+```
+
+For PERFORMANCE mode, readings are batched (10 readings) and sent via Pub/Sub to the cloud heavy-model-service, which returns predictions asynchronously.
+
+See [plans/sequence.md](plans/sequence.md) for complete sequence diagrams covering:
+- System initialization
+- PERFORMANCE mode flow (batch → Pub/Sub → cloud inference)
+- ECO mode flow (individual → REST → local inference)
+- Mode toggle interaction
+- ML warmup sequence
+
+### Class Diagram
+
+See [plans/class.md](plans/class.md) for class definitions including:
+- `CarbonAwareController`, `SensorSimulator`, `PubSubClient`
+- `HybridAnomalyDetector` (ensemble coordinator)
+- `IsolationForestDetector` (window_size=50, n_estimators=100/200)
+- `StatisticalAnomalyDetector` (z_threshold=3.0)
+- `LightModelAPI`, `HeavyModelService`, `AnomalyMonitor`
 
 ---
 
@@ -124,31 +309,32 @@ The system consists of three main components working together:
   - Real-time GUI with Tkinter and Matplotlib
   - Mode toggle between PERFORMANCE and ECO
 
-- [x] **Model Training Pipeline**
-  - Isolation Forest implementation with scikit-learn
-  - Heavy model: 200 estimators, 85% support fraction
-  - Light model: 10 estimators, 90% support fraction
-  - Training data generation (100k samples, ~300 anomalies)
-  - Model evaluation metrics (accuracy, precision, recall, F1)
+- [x] **Hybrid ML Detection Pipeline**
+  - `IsolationForestDetector`: Sliding window (50 samples), online training
+  - `StatisticalAnomalyDetector`: Z-score threshold (3.0σ)
+  - `HybridAnomalyDetector`: Ensemble combining both (flag if EITHER triggers)
+  - Light model: 100 estimators for ECO mode
+  - Heavy model: 200 estimators for PERFORMANCE mode
+  - Warmup phase: First 100 samples use statistical fallback
 
 - [x] **Local Light Model Service**
-  - Flask REST API with `/predict` and `/health` endpoints
-  - Single and batch prediction support
+  - Flask REST API with `/predict`, `/analyze`, `/analyze/batch`, `/stats`, `/reset`
+  - Hybrid ML detection with online training
   - Docker containerization with health checks
 
-### 🏗️ Phase 2: Cloud Integration (In Progress)
+### 🏗️ Phase 2: Cloud Integration (Completed)
 
 - [x] **Google Cloud Pub/Sub Integration**
-  - `SensorPublisher` class with automatic batching (10 readings)
-  - `AnomalySubscriber` class with callback support
+  - `PubSubClient` class with automatic batching (10 readings)
+  - Subscription callback for anomaly results
   - Local emulator for development
   - Connection retry logic and error handling
 
 - [x] **Heavy Model Service**
-  - Pub/Sub subscriber for `sensor-data` topic
-  - Batch processing (processes all readings in message)
+  - Pub/Sub subscriber for `sensor-readings` topic
+  - Hybrid ML detection (200-estimator Isolation Forest + Z-score)
   - Result publishing to `anomaly-results` topic
-  - Confidence scoring (normalized anomaly scores)
+  - Confidence scoring with ensemble agreement
   - Flask health check endpoint on port 8080
 
 - [x] **Cloud Monitoring & Logging**
@@ -217,9 +403,8 @@ The system consists of three main components working together:
    ```bash
    cd services/edge
    pip install -r requirements.txt
-   export PUBSUB_EMULATOR_HOST=localhost:8085
-   export GOOGLE_CLOUD_PROJECT=local-project
-   python main.py
+   export ML_API_URL=http://localhost:5001
+   python local_sensor_gui.py
    ```
 
 5. **Use the Application**
@@ -273,7 +458,7 @@ gcloud builds submit --config=deployment/gcp/cloudbuild.yaml
 ### Development Tools
 - **pytest**: Testing framework (planned)
 - **GitHub Actions**: CI/CD (planned)
-- **PlantUML**: Architecture diagrams
+- **Mermaid**: Architecture diagrams (GitHub-native rendering)
 
 ---
 
@@ -282,17 +467,33 @@ gcloud builds submit --config=deployment/gcp/cloudbuild.yaml
 ```
 FinalProject/
 ├── services/
-│   ├── edge/                    # Edge device with GUI
-│   ├── light-model/             # Local REST API service
-│   └── heavy-model/             # Cloud Pub/Sub service
+│   ├── edge/                    # Edge device application
+│   │   ├── local_sensor_gui.py  # Unified GUI + sensor + Pub/Sub
+│   │   ├── generate_training_data.py
+│   │   └── requirements.txt
+│   ├── light-model/             # Local REST API service (ECO mode)
+│   │   ├── api_service.py
+│   │   └── requirements.txt
+│   └── heavy-model/             # Cloud Pub/Sub service (PERFORMANCE mode)
+│       ├── api_service.py
+│       ├── monitoring.py
+│       └── requirements.txt
 ├── deployment/
 │   ├── docker/                  # Dockerfiles
+│   │   ├── Dockerfile.light
+│   │   └── Dockerfile.heavy
 │   └── gcp/                     # GCP deployment configs
+│       ├── cloudbuild.yaml
+│       └── pubsub-init.sh
 ├── models/                      # ML model training
+│   ├── train_models.py
+│   ├── hybrid_detector.py
+│   ├── isolation_forest_detector.py
+│   └── statistical_model.py
 ├── docs/                        # Documentation
-│   └── GCP_SETUP.md            # Deployment guide
-├── plans/                       # Architecture diagrams
-│   └── out/                    # Generated diagram images
-├── docker-compose.yml          # Local development
+│   ├── LOCAL_SETUP.md          # Local Docker setup
+│   └── GCP_SETUP.md            # Cloud deployment guide
+├── plans/                       # Architecture diagrams (Mermaid)
+├── docker-compose.yml          # Local light-model service
 └── README.md                   # This file
 ```

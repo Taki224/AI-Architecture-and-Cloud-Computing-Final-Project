@@ -3,7 +3,7 @@
 
 # Substitution variables (can be overridden via --substitutions flag)
 substitutions:
-  _REGION: us-central1
+  _REGION: europe-north1
   _REPOSITORY: carbon-aware
   _SERVICE_NAME: heavy-model-service
   _SERVICE_ACCOUNT: heavy-model-sa
@@ -50,7 +50,6 @@ steps:
       - '--port=8080'
       - '--memory=512Mi'
       - '--cpu=1'
-      - '--min-instances=0'
       - '--max-instances=10'
       - '--timeout=60'
 

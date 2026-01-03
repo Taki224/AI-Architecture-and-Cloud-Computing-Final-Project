@@ -78,8 +78,8 @@ gcloud services enable \
 ### 3. Set Default Region
 
 ```bash
-gcloud config set run/region us-central1
-gcloud config set artifacts/location us-central1
+gcloud config set run/region europe-north1
+gcloud config set artifacts/location europe-north1
 ```
 
 ---
@@ -227,43 +227,58 @@ DEVICE_ID=edge-001
 
 ## Build & Deploy to Cloud Run
 
-### 1. Create Artifact Registry Repository
+### 1. Train the Models
+
+Before building the Docker image, train the HybridAnomalyDetector models:
+
+```bash
+cd models
+python train_models.py
+cd ..
+```
+
+This will create:
+- `models/model_heavy.pkl` - HybridAnomalyDetector (Isolation Forest + Z-score, 200 estimators)
+- `models/model_light.pkl` - IsolationForestDetector (50 estimators for edge)
+
+### 2. Create Artifact Registry Repository
 
 ```bash
 gcloud artifacts repositories create carbon-aware \
     --repository-format=docker \
-    --location=us-central1 \
+    --location=europe-north1 \
     --description="Carbon-Aware Anomaly Detection Images"
 ```
 
-### 2. Configure Docker Authentication
+### 3. Configure Docker Authentication
 
 ```bash
-gcloud auth configure-docker us-central1-docker.pkg.dev
+gcloud auth configure-docker europe-north1-docker.pkg.dev
 ```
 
-### 3. Build and Push Image
+### 4. Build and Push Image
 
 ```bash
 PROJECT_ID=$(gcloud config get-value project)
-IMAGE_URL="us-central1-docker.pkg.dev/${PROJECT_ID}/carbon-aware/heavy-model:latest"
+IMAGE_URL="europe-north1-docker.pkg.dev/${PROJECT_ID}/carbon-aware/heavy-model:latest"
 
-# Build image
-docker build -f deployment/docker/Dockerfile.heavy -t $IMAGE_URL .
+# Build image (includes pre-trained model)
+# Note: Use --platform linux/amd64 for Cloud Run compatibility (especially on Apple Silicon/ARM Macs)
+docker build --platform linux/amd64 -f deployment/docker/Dockerfile.heavy -t $IMAGE_URL .
 
 # Push to Artifact Registry
 docker push $IMAGE_URL
 ```
 
-### 4. Deploy to Cloud Run
+### 5. Deploy to Cloud Run
 
 ```bash
 PROJECT_ID=$(gcloud config get-value project)
-IMAGE_URL="us-central1-docker.pkg.dev/${PROJECT_ID}/carbon-aware/heavy-model:latest"
+IMAGE_URL="europe-north1-docker.pkg.dev/${PROJECT_ID}/carbon-aware/heavy-model:latest"
 
 gcloud run deploy heavy-model-service \
     --image=$IMAGE_URL \
-    --region=us-central1 \
+    --region=europe-north1 \
     --platform=managed \
     --service-account=heavy-model-sa@${PROJECT_ID}.iam.gserviceaccount.com \
     --set-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID}" \
@@ -280,14 +295,14 @@ gcloud run deploy heavy-model-service \
 
 > **Note**: `--min-instances=1` keeps one instance warm to avoid cold starts. Remove for cost savings in development.
 
-### 5. Verify Deployment
+### 6. Verify Deployment
 
 ```bash
 # Get service URL
-gcloud run services describe heavy-model-service --region=us-central1 --format='value(status.url)'
+gcloud run services describe heavy-model-service --region=europe-north1 --format='value(status.url)'
 
 # Test health endpoint
-SERVICE_URL=$(gcloud run services describe heavy-model-service --region=us-central1 --format='value(status.url)')
+SERVICE_URL=$(gcloud run services describe heavy-model-service --region=europe-north1 --format='value(status.url)')
 curl $SERVICE_URL/health
 ```
 
@@ -391,10 +406,10 @@ docker-compose restart pubsub-emulator pubsub-init
 
 ```bash
 # View Cloud Run logs in real-time
-gcloud beta run services logs tail heavy-model-service --region=us-central1
+gcloud beta run services logs tail heavy-model-service --region=europe-north1
 
 # Describe Cloud Run service
-gcloud run services describe heavy-model-service --region=us-central1
+gcloud run services describe heavy-model-service --region=europe-north1
 
 # List all Pub/Sub subscriptions with message counts
 gcloud pubsub subscriptions list --format="table(name, topic, ackDeadlineSeconds)"
@@ -412,7 +427,7 @@ gcloud pubsub subscriptions create sensor-data-sub --topic=sensor-data --ack-dea
 2. **Staging**: Use `--min-instances=0` with real GCP Pub/Sub
 3. **Production**: Use `--min-instances=1` to avoid cold starts
 
-Estimated monthly costs (us-central1):
+Estimated monthly costs (europe-north1):
 - Cloud Run: ~$5-20 (depends on traffic)
 - Pub/Sub: ~$0.50 per million messages
 - Cloud Logging: Free tier usually sufficient

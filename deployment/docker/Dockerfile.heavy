@@ -19,8 +19,12 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 # Copy the heavy model service code
 COPY services/heavy-model/ /app/
 
-# Copy shared model code and trained model file
+# Copy shared model code
+COPY models/hybrid_detector.py /app/models/
+COPY models/isolation_forest_detector.py /app/models/
 COPY models/statistical_model.py /app/models/
+
+# Copy pre-trained model
 COPY models/model_heavy.pkl /app/models/
 
 # Set environment variables

@@ -1,40 +1,6 @@
 version: '3.8'
 
 services:
-  # ========== Pub/Sub Emulator ==========
-  # Local emulator for testing Pub/Sub messaging without GCP
-  pubsub-emulator:
-    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
-    container_name: pubsub-emulator
-    command: >
-      gcloud beta emulators pubsub start 
-      --host-port=0.0.0.0:8085 
-      --project=local-project
-    ports:
-      - "8085:8085"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8085"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 10s
-
-  # ========== Pub/Sub Initialization ==========
-  # Creates topics and subscriptions on startup
-  pubsub-init:
-    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
-    container_name: pubsub-init
-    depends_on:
-      pubsub-emulator:
-        condition: service_healthy
-    environment:
-      - PUBSUB_EMULATOR_HOST=pubsub-emulator:8085
-      - PUBSUB_PROJECT_ID=local-project
-    volumes:
-      - ./deployment/gcp/pubsub-init.sh:/app/pubsub-init.sh:ro
-    entrypoint: ["/bin/bash", "/app/pubsub-init.sh"]
-    restart: "no"
-
   # ========== Light Model Service (Edge/Local) ==========
   # REST API for ECO mode local inference
   light-model:
@@ -42,57 +8,21 @@ services:
       context: .
       dockerfile: deployment/docker/Dockerfile.light
     container_name: light-model-service
-    depends_on:
-      pubsub-init:
-        condition: service_completed_successfully
     environment:
       - PYTHONUNBUFFERED=1
-      - FLASK_ENV=development
-      - LOAD_MODELS=light
-      - PUBSUB_EMULATOR_HOST=pubsub-emulator:8085
-      - GOOGLE_CLOUD_PROJECT=local-project
+      - LIGHT_MODEL_PATH=/app/models/model_light.pkl
+      - PORT=5001
     ports:
       - "5001:5000"
     volumes:
       # Mount models directory for development
       - ./models:/app/models
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
-
-  # ========== Heavy Model Service (Cloud Simulation) ==========
-  # Pub/Sub subscriber for PERFORMANCE mode cloud processing
-  heavy-model:
-    build:
-      context: .
-      dockerfile: deployment/docker/Dockerfile.heavy
-    container_name: heavy-model-service
-    depends_on:
-      pubsub-init:
-        condition: service_completed_successfully
-    environment:
-      - PYTHONUNBUFFERED=1
-      - PUBSUB_EMULATOR_HOST=pubsub-emulator:8085
-      - GOOGLE_CLOUD_PROJECT=local-project
-      - PUBSUB_SENSOR_TOPIC=sensor-data
-      - PUBSUB_SENSOR_SUBSCRIPTION=sensor-data-sub
-      - PUBSUB_ANOMALY_TOPIC=anomaly-results
-      - HEAVY_MODEL_PATH=/app/models/model_heavy.pkl
-      - PORT=8080
-    ports:
-      - "8080:8080"
-    volumes:
-      # Mount models directory for development
-      - ./models:/app/models
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
 
 networks:
   default:

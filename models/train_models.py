@@ -1,15 +1,18 @@
 """
 Model Training Script for Anomaly Detection
-Trains both heavy (cloud) and light (edge) models using EllipticEnvelope
-which is optimal for Gaussian-distributed sensor data
+Trains both heavy (cloud) and light (edge) models using:
+- Heavy: HybridAnomalyDetector (Isolation Forest + Z-score ensemble)
+- Light: IsolationForestDetector (lightweight ML only)
 """
 import pandas as pd
 import numpy as np
-from sklearn.covariance import EllipticEnvelope
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, precision_recall_fscore_support
+from sklearn.metrics import confusion_matrix, accuracy_score, precision_recall_fscore_support
 import joblib
 import time
 import os
+
+from hybrid_detector import HybridAnomalyDetector
+from isolation_forest_detector import IsolationForestDetector
 
 
 def load_data(filepath: str):
@@ -26,7 +29,7 @@ def load_data(filepath: str):
     df = pd.read_csv(filepath)
     
     # Extract features (just the vibration value for now)
-    X = df[['value']].values
+    X = df[['value']].values.flatten()
     
     # Extract labels (1 for anomaly, -1 for normal - Isolation Forest convention)
     # Note: CSV has 0 for normal, 1 for anomaly
@@ -40,62 +43,131 @@ def load_data(filepath: str):
     return X, y, df
 
 
-def train_model(X, y, support_fraction: float, model_name: str, contamination: float = 0.01):
+def train_hybrid_model(X, y, n_estimators: int, model_name: str, 
+                       z_threshold: float = 3.0, contamination: float = 0.003,
+                       window_size: int = 50):
     """
-    Train an EllipticEnvelope model.
-    Optimal for Gaussian-distributed sensor data like vibration measurements.
+    Train a HybridAnomalyDetector (Isolation Forest + Z-score ensemble).
     
     Args:
-        X: Training features
+        X: Training features (1D array of vibration values)
         y: Training labels
-        support_fraction: Fraction of points to include in support (higher = more robust)
+        n_estimators: Number of trees in Isolation Forest
         model_name: Name for display purposes
-        contamination: Expected proportion of anomalies in NEW data
+        z_threshold: Z-score threshold for statistical detector
+        contamination: Expected anomaly rate for Isolation Forest
+        window_size: Sliding window size for feature extraction
         
     Returns:
-        Trained model
+        Trained HybridAnomalyDetector
     """
     print(f"\n{'='*60}")
     print(f"Training {model_name}")
     print(f"{'='*60}")
-    print(f"Model: EllipticEnvelope (optimized for Gaussian data)")
+    print(f"Model: HybridAnomalyDetector (Isolation Forest + Z-score)")
     print(f"Parameters:")
-    print(f"  - support_fraction: {support_fraction}")
+    print(f"  - n_estimators: {n_estimators}")
+    print(f"  - z_threshold: {z_threshold}")
     print(f"  - contamination: {contamination}")
-    print(f"  - random_state: 42")
+    print(f"  - window_size: {window_size}")
     
     # Initialize model
-    model = EllipticEnvelope(
-        support_fraction=support_fraction,
+    detector = HybridAnomalyDetector(
+        z_threshold=z_threshold,
         contamination=contamination,
-        random_state=42
+        window_size=window_size,
+        n_estimators=n_estimators
     )
     
-    # Train
+    # Train by passing all samples through the detector
     start_time = time.time()
-    model.fit(X)
-    elapsed = time.time() - start_time
+    print(f"\nFitting model on {len(X):,} samples...")
     
+    for i, value in enumerate(X):
+        detector.detect(value)
+        if (i + 1) % 1000 == 0:
+            stats = detector.get_stats()
+            print(f"  Processed {i+1:,}/{len(X):,} samples | ML fitted: {stats['ml_fitted']}")
+    
+    elapsed = time.time() - start_time
     print(f"\nTraining completed in {elapsed:.2f} seconds")
     
-    # Evaluate on training data
-    print("\nTraining Set Performance:")
-    evaluate_model(model, X, y)
+    stats = detector.get_stats()
+    print(f"  ML model fitted: {stats['ml_fitted']}")
+    print(f"  Total detections: {stats['total_detections']:,}")
+    print(f"  Anomaly rate: {stats['anomaly_rate']*100:.2f}%")
     
-    return model
+    return detector
 
 
-def evaluate_model(model, X, y):
+def train_light_model(X, y, n_estimators: int, model_name: str,
+                      contamination: float = 0.003, window_size: int = 50):
     """
-    Evaluate model performance.
+    Train an IsolationForestDetector (ML only, for edge deployment).
     
     Args:
-        model: Trained Isolation Forest model
-        X: Features
-        y: True labels
+        X: Training features (1D array of vibration values)
+        y: Training labels
+        n_estimators: Number of trees in Isolation Forest
+        model_name: Name for display purposes
+        contamination: Expected anomaly rate
+        window_size: Sliding window size
+        
+    Returns:
+        Trained IsolationForestDetector
     """
-    # Predict
-    y_pred = model.predict(X)
+    print(f"\n{'='*60}")
+    print(f"Training {model_name}")
+    print(f"{'='*60}")
+    print(f"Model: IsolationForestDetector (lightweight ML)")
+    print(f"Parameters:")
+    print(f"  - n_estimators: {n_estimators}")
+    print(f"  - contamination: {contamination}")
+    print(f"  - window_size: {window_size}")
+    
+    # Initialize model
+    detector = IsolationForestDetector(
+        contamination=contamination,
+        window_size=window_size,
+        n_estimators=n_estimators,
+        min_samples_for_fit=100
+    )
+    
+    # Train by passing all samples through the detector
+    start_time = time.time()
+    print(f"\nFitting model on {len(X):,} samples...")
+    
+    for i, value in enumerate(X):
+        detector.detect(value)
+        if (i + 1) % 1000 == 0:
+            print(f"  Processed {i+1:,}/{len(X):,} samples | ML fitted: {detector.is_fitted}")
+    
+    elapsed = time.time() - start_time
+    print(f"\nTraining completed in {elapsed:.2f} seconds")
+    print(f"  ML model fitted: {detector.is_fitted}")
+    
+    return detector
+
+
+def evaluate_detector(detector, X, y, detector_type: str = "hybrid"):
+    """
+    Evaluate detector performance.
+    
+    Args:
+        detector: Trained detector
+        X: Features
+        y: True labels (-1 for anomaly, 1 for normal)
+        detector_type: 'hybrid' or 'light'
+    """
+    print("\nEvaluating detector...")
+    
+    predictions = []
+    for value in X:
+        result = detector.detect(value)
+        pred = -1 if result['is_anomaly'] else 1
+        predictions.append(pred)
+    
+    y_pred = np.array(predictions)
     
     # Calculate metrics
     accuracy = accuracy_score(y, y_pred)
@@ -141,13 +213,13 @@ def save_model(model, filepath: str):
 def main():
     """Main training pipeline"""
     print("=" * 60)
-    print("Isolation Forest Model Training Pipeline")
+    print("Hybrid Anomaly Detector Training Pipeline")
     print("Carbon-Aware IoT Anomaly Detection System")
     print("=" * 60)
     
     # Paths
-    training_data_path = "training_data.csv"
-    validation_data_path = "validation_data.csv"
+    training_data_path = "data/training_data.csv"
+    validation_data_path = "data/validation_data.csv"
     
     # Load training data
     print("\n" + "=" * 60)
@@ -159,31 +231,31 @@ def main():
     actual_contamination = sum(y_train == -1) / len(y_train)
     print(f"\nActual contamination rate: {actual_contamination:.4f}")
     
-    # Train heavy model (cloud) - more robust to outliers
+    # Train heavy model (cloud) - HybridAnomalyDetector with more estimators
     print("\n" + "=" * 60)
     print("STEP 2: Train Heavy Model (Cloud)")
     print("=" * 60)
-    print(f"\nTraining data has {actual_contamination*100:.1f}% anomalies")
-    print("Using support_fraction=0.85 for robust estimation")
-    print("Setting contamination=0.005 (0.5%) for production")
-    model_heavy = train_model(
+    model_heavy = train_hybrid_model(
         X_train, 
         y_train, 
-        support_fraction=0.85,  # Use 85% of data for robust estimate
-        model_name="Heavy Model (Cloud - Robust)",
-        contamination=0.005  # Expect 0.5% anomalies in production
+        n_estimators=200,  # More trees for cloud
+        model_name="Heavy Model (Cloud - Hybrid Ensemble)",
+        z_threshold=3.0,
+        contamination=0.003,
+        window_size=50
     )
     
-    # Train light model (edge) - faster but slightly less robust
+    # Train light model (edge) - IsolationForestDetector only
     print("\n" + "=" * 60)
     print("STEP 3: Train Light Model (Edge)")
     print("=" * 60)
-    model_light = train_model(
+    model_light = train_light_model(
         X_train, 
         y_train, 
-        support_fraction=0.90,  # Faster fit with 90% support
-        model_name="Light Model (Edge - Fast)",
-        contamination=0.005  # Expect 0.5% anomalies in production
+        n_estimators=50,  # Fewer trees for edge
+        model_name="Light Model (Edge - ML Only)",
+        contamination=0.003,
+        window_size=50
     )
     
     # Validate on validation set
@@ -194,10 +266,10 @@ def main():
         X_val, y_val, df_val = load_data(validation_data_path)
         
         print("\n--- Heavy Model Validation Performance ---")
-        evaluate_model(model_heavy, X_val, y_val)
+        evaluate_detector(model_heavy, X_val, y_val, detector_type="hybrid")
         
         print("\n--- Light Model Validation Performance ---")
-        evaluate_model(model_light, X_val, y_val)
+        evaluate_detector(model_light, X_val, y_val, detector_type="light")
     
     # Save models
     print("\n" + "=" * 60)
@@ -211,13 +283,12 @@ def main():
     print("Training Complete!")
     print("=" * 60)
     print("\nModels saved:")
-    print("  ✓ model_heavy.pkl (200 estimators - for cloud deployment)")
-    print("  ✓ model_light.pkl (10 estimators - for edge deployment)")
+    print("  ✓ model_heavy.pkl (HybridAnomalyDetector - 200 estimators for cloud)")
+    print("  ✓ model_light.pkl (IsolationForestDetector - 50 estimators for edge)")
     print("\nNext steps:")
-    print("  1. Test models with edge device GUI")
-    print("  2. Integrate with Pub/Sub for cloud communication")
-    print("  3. Deploy heavy model to Cloud Run")
-    print("  4. Implement carbon-aware mode switching")
+    print("  1. Rebuild Docker image with trained models")
+    print("  2. Deploy heavy model to Cloud Run")
+    print("  3. Test with edge device GUI")
     print("=" * 60)
 
 

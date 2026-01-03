@@ -1,10 +1,10 @@
 """
 Heavy Model API Service for GCP Cloud Run
-Provides anomaly detection using the heavy (robust) model via Pub/Sub
+Provides anomaly detection using Hybrid ML (Isolation Forest + Z-score) via Pub/Sub
 
 This service:
-1. Subscribes to 'sensor-data' Pub/Sub topic for batched sensor readings
-2. Runs heavy model inference on each reading
+1. Subscribes to 'sensor-readings' Pub/Sub topic for batched sensor readings
+2. Runs hybrid ML inference (Isolation Forest + Z-score ensemble)
 3. Publishes results to 'anomaly-results' topic
 4. Exposes /health endpoint for Cloud Run health checks
 5. Logs anomaly detections to Cloud Logging/Monitoring
@@ -14,20 +14,21 @@ import sys
 import json
 import threading
 import signal
+import warnings
 from datetime import datetime
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 
+# Suppress sklearn warnings to reduce log noise
+warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
+warnings.filterwarnings('ignore', message='.*InconsistentVersionWarning.*')
+
 from flask import Flask, jsonify
-import joblib
 import numpy as np
 
 # Add parent directory for shared model code
 sys.path.insert(0, '/app/models')
 
-try:
-    from statistical_model import StatisticalAnomalyDetector
-except ImportError:
-    StatisticalAnomalyDetector = None
+from hybrid_detector import HybridAnomalyDetector
 
 # Import monitoring (optional - gracefully degrades if unavailable)
 try:
@@ -41,7 +42,7 @@ except ImportError:
 app = Flask(__name__)
 
 # Global state
-heavy_model = None
+detector = None
 publisher = None
 subscriber = None
 monitor = None
@@ -52,29 +53,58 @@ PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'local-project')
 SENSOR_TOPIC = os.getenv('PUBSUB_SENSOR_TOPIC', 'sensor-data')
 SENSOR_SUBSCRIPTION = os.getenv('PUBSUB_SENSOR_SUBSCRIPTION', 'sensor-data-sub')
 ANOMALY_TOPIC = os.getenv('PUBSUB_ANOMALY_TOPIC', 'anomaly-results')
-MODEL_PATH = os.getenv('HEAVY_MODEL_PATH', '/app/models/model_heavy.pkl')
+
+# ML Configuration (heavier settings for cloud)
+Z_THRESHOLD = float(os.getenv('Z_THRESHOLD', '3.0'))
+CONTAMINATION = float(os.getenv('CONTAMINATION', '0.003'))
+WINDOW_SIZE = int(os.getenv('WINDOW_SIZE', '50'))
+N_ESTIMATORS = int(os.getenv('N_ESTIMATORS', '200'))  # More estimators for cloud
 
 
-def load_model():
-    """Load the heavy model on startup."""
-    global heavy_model
+def init_detector():
+    """Load the pre-trained hybrid anomaly detector from disk."""
+    global detector
+    
+    model_path = os.getenv('HEAVY_MODEL_PATH', '/app/models/model_heavy.pkl')
     
     try:
-        if os.path.exists(MODEL_PATH):
-            heavy_model = joblib.load(MODEL_PATH)
-            print(f"✓ Heavy model loaded from {MODEL_PATH}")
-            
-            # Log model info
-            import sys
-            size_mb = sys.getsizeof(heavy_model) / (1024 * 1024)
-            print(f"  Model size: ~{size_mb:.2f} MB in memory")
-            return True
-        else:
-            print(f"✗ Heavy model not found at {MODEL_PATH}")
-            return False
-            
+        import joblib
+        detector = joblib.load(model_path)
+        stats = detector.get_stats()
+        print(f"✓ Loaded pre-trained HybridAnomalyDetector from {model_path}")
+        print(f"  - ML model fitted: {stats.get('ml_fitted', False)}")
+        print(f"  - Z-score threshold: {detector.z_threshold}")
+        print(f"  - Contamination: {detector.contamination}")
+        return True
+    except FileNotFoundError:
+        print(f"✗ Model file not found: {model_path}")
+        print("  Falling back to runtime initialization...")
+        return init_detector_fallback()
     except Exception as e:
-        print(f"✗ Error loading heavy model: {e}")
+        print(f"✗ Failed to load detector: {e}")
+        print("  Falling back to runtime initialization...")
+        return init_detector_fallback()
+
+
+def init_detector_fallback():
+    """Fallback: Initialize detector at runtime if pre-trained model unavailable."""
+    global detector
+    
+    try:
+        detector = HybridAnomalyDetector(
+            z_threshold=Z_THRESHOLD,
+            contamination=CONTAMINATION,
+            window_size=WINDOW_SIZE,
+            n_estimators=N_ESTIMATORS
+        )
+        print(f"✓ HybridAnomalyDetector initialized (runtime fallback)")
+        print(f"  - Z-score threshold: {Z_THRESHOLD}")
+        print(f"  - Contamination: {CONTAMINATION}")
+        print(f"  - Window size: {WINDOW_SIZE}")
+        print(f"  - Isolation Forest estimators: {N_ESTIMATORS}")
+        return True
+    except Exception as e:
+        print(f"✗ Failed to initialize detector: {e}")
         return False
 
 
@@ -117,7 +147,7 @@ def init_monitoring():
 
 def process_batch(message_data: dict) -> dict:
     """
-    Process a batch of sensor readings through the heavy model.
+    Process a batch of sensor readings through the hybrid ML detector.
     
     Args:
         message_data: Dict containing 'device_id' and 'readings' array
@@ -125,7 +155,7 @@ def process_batch(message_data: dict) -> dict:
     Returns:
         Dict with processed results including anomaly predictions
     """
-    global heavy_model, monitor
+    global detector, monitor
     
     device_id = message_data.get('device_id', 'unknown')
     readings = message_data.get('readings', [])
@@ -133,45 +163,43 @@ def process_batch(message_data: dict) -> dict:
     if not readings:
         return {'device_id': device_id, 'readings': [], 'error': 'No readings provided'}
     
-    if heavy_model is None:
-        return {'device_id': device_id, 'readings': [], 'error': 'Model not loaded'}
+    if detector is None:
+        return {'device_id': device_id, 'readings': [], 'error': 'Detector not initialized'}
     
     results = []
     anomaly_count = 0
     
     for reading in readings:
         timestamp = reading.get('timestamp', datetime.utcnow().timestamp())
-        vibration = reading.get('vibration', 0.0)
+        vibration = reading.get('vibration', reading.get('value', 0.0))
         
         try:
-            # Prepare input for model
-            X = np.array([[vibration]])
+            # Run hybrid detection
+            detection = detector.detect(vibration)
             
-            # Get prediction (-1 = anomaly, 1 = normal)
-            prediction = heavy_model.predict(X)[0]
-            score = heavy_model.score_samples(X)[0]
-            
-            is_anomaly = (prediction == -1)
-            
-            # Calculate confidence (normalize score to 0-1 range)
-            # Lower scores = more anomalous, typical range is -10 to 0
-            confidence = min(1.0, max(0.0, (score + 10) / 10))
-            if is_anomaly:
-                confidence = 1.0 - confidence  # Invert for anomalies
+            is_anomaly = detection['is_anomaly']
+            confidence = detection.get('confidence', 0.0)
+            anomaly_score = detection.get('anomaly_score', 0.0)
+            z_score = detection.get('z_score', 0.0)
+            method = detection.get('method', 'unknown')
             
             result = {
-                'timestamp': timestamp,
-                'vibration': vibration,
-                'is_anomaly': is_anomaly,
+                'timestamp': float(timestamp),
+                'vibration': float(vibration),
+                'is_anomaly': bool(is_anomaly),
                 'confidence': float(confidence),
-                'anomaly_score': float(score)
+                'anomaly_score': float(anomaly_score),
+                'z_score': float(z_score),
+                'method': str(method),
+                'ml_anomaly': bool(detection.get('ml_anomaly', False)),
+                'stat_anomaly': bool(detection.get('stat_anomaly', False))
             }
             results.append(result)
             
             if is_anomaly:
                 anomaly_count += 1
                 print(f"🚨 ANOMALY | Device: {device_id} | Value: {vibration:7.4f} | "
-                      f"Score: {score:8.4f} | Confidence: {confidence:.2%}")
+                      f"Method: {method} | Score: {anomaly_score:.4f} | Z: {z_score:.2f}")
                 
                 # Log to Cloud Monitoring
                 if monitor:
@@ -182,7 +210,7 @@ def process_batch(message_data: dict) -> dict:
                         device_id=device_id
                     )
             else:
-                print(f"✓ Normal  | Device: {device_id} | Value: {vibration:7.4f} | Score: {score:8.4f}")
+                print(f"✓ Normal  | Device: {device_id} | Value: {vibration:7.4f} | Z: {z_score:.2f}")
                 
         except Exception as e:
             print(f"✗ Error processing reading: {e}")
@@ -195,15 +223,17 @@ def process_batch(message_data: dict) -> dict:
             })
     
     # Summary logging
+    stats = detector.get_stats()
     if anomaly_count > 0:
         print(f"\n📊 Batch Summary: {anomaly_count}/{len(readings)} anomalies detected "
-              f"({anomaly_count/len(readings)*100:.1f}%)\n")
+              f"({anomaly_count/len(readings)*100:.1f}%) | ML fitted: {stats.get('ml_fitted', False)}\n")
     
     return {
         'device_id': device_id,
         'readings': results,
         'count': len(results),
         'anomalies_detected': anomaly_count,
+        'ml_fitted': stats.get('ml_fitted', False),
         'processed_at': datetime.utcnow().isoformat()
     }
 
@@ -301,11 +331,16 @@ def start_subscriber():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint for Cloud Run."""
+    stats = detector.get_stats() if detector else {}
     return jsonify({
-        'status': 'healthy',
-        'model_loaded': heavy_model is not None,
+        'status': 'healthy' if detector else 'degraded',
+        'detector': 'hybrid_isolation_forest_zscore',
+        'ml_fitted': stats.get('ml_fitted', False),
+        'total_detections': stats.get('total_detections', 0),
+        'anomaly_rate': stats.get('anomaly_rate', 0.0),
         'pubsub_connected': publisher is not None and subscriber is not None,
         'monitoring_enabled': monitor is not None,
+        'n_estimators': N_ESTIMATORS,
         'timestamp': datetime.utcnow().isoformat()
     })
 
@@ -315,10 +350,12 @@ def root():
     """Root endpoint."""
     return jsonify({
         'service': 'heavy-model-api',
-        'version': '1.0.0',
-        'description': 'Cloud anomaly detection service using heavy model via Pub/Sub',
+        'version': '2.0.0',
+        'description': 'Cloud anomaly detection using Hybrid ML (Isolation Forest + Z-score)',
+        'detector': 'HybridAnomalyDetector',
+        'n_estimators': N_ESTIMATORS,
         'endpoints': {
-            '/health': 'Health check',
+            '/health': 'Health check with detector status',
             '/': 'Service info'
         }
     })
@@ -339,12 +376,15 @@ def signal_handler(signum, frame):
 def main():
     """Main entry point for the heavy model service."""
     print("=" * 70)
-    print("Heavy Model API Service - Cloud Anomaly Detection")
+    print("Heavy Model API Service - Hybrid ML Cloud Anomaly Detection")
     print("=" * 70)
     print(f"Project: {PROJECT_ID}")
     print(f"Sensor Topic: {SENSOR_TOPIC}")
     print(f"Anomaly Topic: {ANOMALY_TOPIC}")
-    print(f"Model Path: {MODEL_PATH}")
+    print(f"Detector: HybridAnomalyDetector")
+    print(f"  - Isolation Forest: {N_ESTIMATORS} estimators (heavy)")
+    print(f"  - Z-score threshold: {Z_THRESHOLD}")
+    print(f"  - Window size: {WINDOW_SIZE}")
     print("=" * 70)
     
     # Register signal handlers
@@ -352,8 +392,8 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     
     # Initialize components
-    if not load_model():
-        print("⚠ Warning: Model not loaded, service will return errors")
+    if not init_detector():
+        print("⚠ Warning: Detector not initialized, service will return errors")
     
     if not init_pubsub():
         print("✗ Failed to initialize Pub/Sub, exiting...")
