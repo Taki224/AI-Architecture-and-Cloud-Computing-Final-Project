@@ -71,8 +71,10 @@ class AnomalyMonitor:
         """Initialize Cloud Monitoring client and create metric descriptors."""
         try:
             from google.cloud import monitoring_v3
+            from google.cloud.monitoring_v3 import types
             
             self._monitoring_client = monitoring_v3.MetricServiceClient()
+            self._types = types
             print("[Monitor] Cloud Monitoring initialized")
             self._create_metric_descriptor()
             
@@ -87,14 +89,14 @@ class AnomalyMonitor:
             return
         
         try:
-            from google.cloud import monitoring_v3
+            from google.cloud.monitoring_v3 import types
             
             project_name = f"projects/{self.project_id}"
             
-            descriptor = monitoring_v3.MetricDescriptor()
+            descriptor = types.MetricDescriptor()
             descriptor.type = self.METRIC_TYPE
-            descriptor.metric_kind = monitoring_v3.MetricDescriptor.MetricKind.GAUGE
-            descriptor.value_type = monitoring_v3.MetricDescriptor.ValueType.DOUBLE
+            descriptor.metric_kind = types.MetricDescriptor.MetricKind.GAUGE
+            descriptor.value_type = types.MetricDescriptor.ValueType.DOUBLE
             descriptor.description = "Anomaly detection rate per minute (60-second rolling window)"
             descriptor.display_name = "Anomaly Detection Rate"
             descriptor.unit = "anomalies/min"
@@ -154,12 +156,11 @@ class AnomalyMonitor:
             return
         
         try:
-            from google.cloud import monitoring_v3
-            from google.protobuf import timestamp_pb2
+            from google.cloud.monitoring_v3 import types
             
             project_name = f"projects/{self.project_id}"
             
-            series = monitoring_v3.TimeSeries()
+            series = types.TimeSeries()
             series.metric.type = self.METRIC_TYPE
             series.resource.type = "global"
             
@@ -167,11 +168,11 @@ class AnomalyMonitor:
             seconds = int(now)
             nanos = int((now - seconds) * 10**9)
             
-            interval = monitoring_v3.TimeInterval({
+            interval = types.TimeInterval({
                 "end_time": {"seconds": seconds, "nanos": nanos}
             })
             
-            point = monitoring_v3.Point({
+            point = types.Point({
                 "interval": interval,
                 "value": {"double_value": value}
             })
