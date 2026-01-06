@@ -20,6 +20,7 @@ from codecarbon import EmissionsTracker
 # GCP Cloud Monitoring
 from google.cloud import monitoring_v3
 from google.api import metric_pb2 as api_metric
+from google.api import label_pb2
 
 
 class CarbonMonitor:
@@ -134,14 +135,14 @@ class CarbonMonitor:
                 descriptor.unit = desc_config["unit"]
                 
                 # Add labels
-                descriptor.labels.append(api_metric.LabelDescriptor(
+                descriptor.labels.append(label_pb2.LabelDescriptor(
                     key="service",
-                    value_type=api_metric.LabelDescriptor.ValueType.STRING,
+                    value_type=label_pb2.LabelDescriptor.ValueType.STRING,
                     description="Service name (heavy-model or light-model)"
                 ))
-                descriptor.labels.append(api_metric.LabelDescriptor(
+                descriptor.labels.append(label_pb2.LabelDescriptor(
                     key="mode",
-                    value_type=api_metric.LabelDescriptor.ValueType.STRING,
+                    value_type=label_pb2.LabelDescriptor.ValueType.STRING,
                     description="Processing mode (PERFORMANCE or ECO)"
                 ))
                 
