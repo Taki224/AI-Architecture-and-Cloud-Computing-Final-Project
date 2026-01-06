@@ -5,3 +5,10 @@ pytest-mock==3.15.1
 scipy==1.16.3
 requests==2.32.5
 numpy>=1.25.2
+
+# Add dependencies for testing services
+flask>=3.0.0
+google-cloud-pubsub>=2.23.0
+google-cloud-logging>=3.8.0
+google-cloud-monitoring>=2.16.0
+codecarbon>=2.3.0

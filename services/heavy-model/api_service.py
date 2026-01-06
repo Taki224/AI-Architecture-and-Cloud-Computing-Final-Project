@@ -241,14 +241,14 @@ def process_batch(message_data: dict) -> dict:
                     
                     # Log to Cloud Monitoring
                     if monitor:
-                    monitor.log_anomaly(
-                        timestamp=timestamp,
-                        vibration=vibration,
-                        confidence=confidence,
-                        device_id=device_id
-                    )
-            else:
-                print(f"✓ Normal  | Device: {device_id} | Value: {vibration:7.4f} | Z: {z_score:.2f}")
+                        monitor.log_anomaly(
+                            timestamp=timestamp,
+                            vibration=vibration,
+                            confidence=confidence,
+                            device_id=device_id
+                        )
+                else:
+                    print(f"✓ Normal  | Device: {device_id} | Value: {vibration:7.4f} | Z: {z_score:.2f}")
                 
             except Exception as e:
                 print(f"✗ Error processing reading: {e}")
