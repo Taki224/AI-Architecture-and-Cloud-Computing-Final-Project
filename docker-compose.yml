@@ -12,11 +12,15 @@ services:
       - PYTHONUNBUFFERED=1
       - LIGHT_MODEL_PATH=/app/models/model_light.pkl
       - PORT=5001
+      - GOOGLE_CLOUD_PROJECT=project-bf5303f9-c6e6-4630-a08
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-credentials.json
     ports:
       - "5001:5000"
     volumes:
       # Mount models directory for development
       - ./models:/app/models
+      # Mount GCP credentials for Cloud Monitoring access
+      - ${HOME}/.config/gcloud/application_default_credentials.json:/app/gcp-credentials.json:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
       interval: 10s

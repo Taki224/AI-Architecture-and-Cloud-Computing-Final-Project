@@ -217,25 +217,48 @@ def analyze_batch():
         results = []
         anomaly_count = 0
         
-        for reading in readings:
-            value = float(reading['value'])
-            result = detector.detect(value)
-            
-            is_anomaly = result['is_anomaly']
-            if is_anomaly:
-                anomaly_count += 1
-                print(f"🚨 ANOMALY: t={reading.get('timestamp')}, value={value:.4f}, "
-                      f"method={result['method']}, score={result.get('anomaly_score', 0):.4f}")
-            
-            results.append({
-                'timestamp': reading.get('timestamp'),
-                'value': value,
-                'is_anomaly': is_anomaly,
-                'method': result.get('method'),
-                'anomaly_score': result.get('anomaly_score', 0.0),
-                'z_score': result.get('z_score', 0.0),
-                'confidence': result.get('confidence', 0.0)
-            })
+        # Track carbon emissions for batch processing
+        if carbon_monitor:
+            with carbon_monitor.track_inference(batch_size=len(readings)):
+                for reading in readings:
+                    value = float(reading['value'])
+                    result = detector.detect(value)
+                    
+                    is_anomaly = result['is_anomaly']
+                    if is_anomaly:
+                        anomaly_count += 1
+                        print(f"🚨 ANOMALY: t={reading.get('timestamp')}, value={value:.4f}, "
+                              f"method={result['method']}, score={result.get('anomaly_score', 0):.4f}")
+                    
+                    results.append({
+                        'timestamp': reading.get('timestamp'),
+                        'value': value,
+                        'is_anomaly': is_anomaly,
+                        'method': result.get('method'),
+                        'anomaly_score': result.get('anomaly_score', 0.0),
+                        'z_score': result.get('z_score', 0.0),
+                        'confidence': result.get('confidence', 0.0)
+                    })
+        else:
+            for reading in readings:
+                value = float(reading['value'])
+                result = detector.detect(value)
+                
+                is_anomaly = result['is_anomaly']
+                if is_anomaly:
+                    anomaly_count += 1
+                    print(f"🚨 ANOMALY: t={reading.get('timestamp')}, value={value:.4f}, "
+                          f"method={result['method']}, score={result.get('anomaly_score', 0):.4f}")
+                
+                results.append({
+                    'timestamp': reading.get('timestamp'),
+                    'value': value,
+                    'is_anomaly': is_anomaly,
+                    'method': result.get('method'),
+                    'anomaly_score': result.get('anomaly_score', 0.0),
+                    'z_score': result.get('z_score', 0.0),
+                    'confidence': result.get('confidence', 0.0)
+                })
         
         stats = detector.get_stats()
         summary = {

@@ -68,17 +68,50 @@ class AnomalyMonitor:
             print(f"[Monitor] Cloud Logging unavailable: {e}")
     
     def _init_monitoring(self):
-        """Initialize Cloud Monitoring client."""
+        """Initialize Cloud Monitoring client and create metric descriptors."""
         try:
             from google.cloud import monitoring_v3
             
             self._monitoring_client = monitoring_v3.MetricServiceClient()
             print("[Monitor] Cloud Monitoring initialized")
+            self._create_metric_descriptor()
             
         except ImportError:
             print("[Monitor] google-cloud-monitoring not installed")
         except Exception as e:
             print(f"[Monitor] Cloud Monitoring unavailable: {e}")
+    
+    def _create_metric_descriptor(self):
+        """Create custom metric descriptor for anomaly rate if it doesn't exist."""
+        if not self._monitoring_client:
+            return
+        
+        try:
+            from google.cloud import monitoring_v3
+            
+            project_name = f"projects/{self.project_id}"
+            
+            descriptor = monitoring_v3.MetricDescriptor()
+            descriptor.type = self.METRIC_TYPE
+            descriptor.metric_kind = monitoring_v3.MetricDescriptor.MetricKind.GAUGE
+            descriptor.value_type = monitoring_v3.MetricDescriptor.ValueType.DOUBLE
+            descriptor.description = "Anomaly detection rate per minute (60-second rolling window)"
+            descriptor.display_name = "Anomaly Detection Rate"
+            descriptor.unit = "anomalies/min"
+            
+            self._monitoring_client.create_metric_descriptor(
+                name=project_name,
+                metric_descriptor=descriptor,
+                timeout=10.0
+            )
+            print(f"[Monitor] Created metric descriptor: {self.METRIC_TYPE}")
+            
+        except Exception as e:
+            # Ignore if descriptor already exists
+            if "already exists" in str(e).lower():
+                print(f"[Monitor] Metric descriptor already exists: {self.METRIC_TYPE}")
+            else:
+                print(f"[Monitor] Failed to create metric descriptor: {e}")
     
     def _start_reporter(self):
         """Start background thread for periodic metric reporting."""
@@ -147,7 +180,8 @@ class AnomalyMonitor:
             
             self._monitoring_client.create_time_series(
                 name=project_name,
-                time_series=[series]
+                time_series=[series],
+                timeout=10.0  # 10 second timeout to prevent 504 errors
             )
             
         except Exception as e:

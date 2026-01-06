@@ -86,12 +86,77 @@ class CarbonMonitor:
         print(f"[CarbonMonitor] Country: {country_iso_code}, Project: {project_id}")
     
     def _init_monitoring(self):
-        """Initialize GCP Cloud Monitoring client."""
+        """Initialize GCP Cloud Monitoring client and create metric descriptors."""
         try:
             self._monitoring_client = monitoring_v3.MetricServiceClient()
             print("[CarbonMonitor] Cloud Monitoring client initialized")
+            self._create_metric_descriptors()
         except Exception as e:
             print(f"[CarbonMonitor] Failed to init Cloud Monitoring: {e}")
+    
+    def _create_metric_descriptors(self):
+        """Create custom metric descriptors if they don't exist."""
+        if not self._monitoring_client:
+            return
+        
+        project_name = f"projects/{self.project_id}"
+        
+        descriptors = [
+            {
+                "type": self.METRIC_EMISSIONS,
+                "display_name": "Carbon Emissions per Period",
+                "description": "Carbon emissions in gCO2e per reporting period",
+                "unit": "gCO2e"
+            },
+            {
+                "type": self.METRIC_TOTAL_EMISSIONS,
+                "display_name": "Total Carbon Emissions",
+                "description": "Cumulative carbon emissions in gCO2e",
+                "unit": "gCO2e"
+            },
+            {
+                "type": self.METRIC_INFERENCE_COUNT,
+                "display_name": "Inference Count",
+                "description": "Number of inferences per reporting period",
+                "unit": "1"
+            }
+        ]
+        
+        for desc_config in descriptors:
+            try:
+                descriptor = monitoring_v3.MetricDescriptor()
+                descriptor.type = desc_config["type"]
+                descriptor.metric_kind = monitoring_v3.MetricDescriptor.MetricKind.GAUGE
+                descriptor.value_type = monitoring_v3.MetricDescriptor.ValueType.DOUBLE if "emissions" in desc_config["type"] else monitoring_v3.MetricDescriptor.ValueType.INT64
+                descriptor.description = desc_config["description"]
+                descriptor.display_name = desc_config["display_name"]
+                descriptor.unit = desc_config["unit"]
+                
+                # Add labels
+                descriptor.labels.append(monitoring_v3.LabelDescriptor(
+                    key="service",
+                    value_type=monitoring_v3.LabelDescriptor.ValueType.STRING,
+                    description="Service name (heavy-model or light-model)"
+                ))
+                descriptor.labels.append(monitoring_v3.LabelDescriptor(
+                    key="mode",
+                    value_type=monitoring_v3.LabelDescriptor.ValueType.STRING,
+                    description="Processing mode (PERFORMANCE or ECO)"
+                ))
+                
+                self._monitoring_client.create_metric_descriptor(
+                    name=project_name,
+                    metric_descriptor=descriptor,
+                    timeout=10.0
+                )
+                print(f"[CarbonMonitor] Created metric descriptor: {desc_config['type']}")
+                
+            except Exception as e:
+                # Ignore if descriptor already exists
+                if "already exists" in str(e).lower():
+                    print(f"[CarbonMonitor] Metric descriptor already exists: {desc_config['type']}")
+                else:
+                    print(f"[CarbonMonitor] Failed to create descriptor {desc_config['type']}: {e}")
     
     def _start_reporter(self):
         """Start background thread for periodic metric reporting."""
@@ -205,7 +270,8 @@ class CarbonMonitor:
             
             self._monitoring_client.create_time_series(
                 name=project_name,
-                time_series=[series]
+                time_series=[series],
+                timeout=10.0  # 10 second timeout to prevent 504 errors
             )
             
         except Exception as e:
