@@ -52,7 +52,7 @@ class PubSubClient:
     
     def __init__(self):
         """Initialize the Pub/Sub client with project and emulator detection."""
-        self.project_id = os.getenv('GOOGLE_CLOUD_PROJECT', 'your-project-id')
+        self.project_id = os.getenv('GOOGLE_CLOUD_PROJECT', 'project-bf5303f9-c6e6-4630-a08')
         self.emulator_host = os.getenv('PUBSUB_EMULATOR_HOST')
         self._publisher = None
         self._subscriber = None

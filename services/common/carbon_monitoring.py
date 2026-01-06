@@ -45,7 +45,7 @@ class CarbonMonitor:
         project_id: str,
         service_name: str,
         mode: str,
-        country_iso_code: str = "HUN",  # Hungary default, adjust as needed
+        country_iso_code: str = "AUT",  # Austria default, adjust as needed
         region: Optional[str] = None
     ):
         """
@@ -226,6 +226,9 @@ class CarbonMonitor:
         Yields:
             EmissionsTracker instance (can be ignored)
         """
+        # Set country code via environment variable for CodeCarbon
+        os.environ['CODECARBON_COUNTRY_ISO_CODE'] = self.country_iso_code
+        
         # Create a temporary tracker for this inference
         tracker = EmissionsTracker(
             project_name=f"{self.service_name}-inference",
@@ -234,7 +237,6 @@ class CarbonMonitor:
             save_to_api=False,
             save_to_logger=False,
             log_level="error",  # Suppress verbose output
-            country_iso_code=self.country_iso_code,
             tracking_mode="process"
         )
         
@@ -271,6 +273,9 @@ class CarbonMonitor:
         Returns:
             Emissions in grams CO₂e (may be 0 for very fast operations)
         """
+        # Set country code via environment variable for CodeCarbon
+        os.environ['CODECARBON_COUNTRY_ISO_CODE'] = self.country_iso_code
+        
         tracker = EmissionsTracker(
             project_name=f"{self.service_name}-single",
             measure_power_secs=0.1,
@@ -278,7 +283,6 @@ class CarbonMonitor:
             save_to_api=False,
             save_to_logger=False,
             log_level="error",
-            country_iso_code=self.country_iso_code,
             tracking_mode="process"
         )
         

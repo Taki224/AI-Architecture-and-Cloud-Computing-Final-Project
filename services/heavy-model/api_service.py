@@ -165,7 +165,7 @@ def init_carbon_monitoring():
                 project_id=PROJECT_ID,
                 service_name="heavy-model",
                 mode="PERFORMANCE",
-                country_iso_code=os.getenv('CARBON_COUNTRY_CODE', 'HUN')
+                country_iso_code=os.getenv('CARBON_COUNTRY_CODE', 'AUT')
             )
             print("✓ Carbon Monitoring initialized (PERFORMANCE mode)")
             return True

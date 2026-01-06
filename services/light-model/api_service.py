@@ -32,7 +32,7 @@ carbon_monitor = None
 CONTAMINATION = float(os.getenv('CONTAMINATION', '0.003'))
 WINDOW_SIZE = int(os.getenv('WINDOW_SIZE', '50'))
 N_ESTIMATORS = int(os.getenv('N_ESTIMATORS', '50'))
-PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'local-project')
+PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'project-bf5303f9-c6e6-4630-a08')
 
 
 def init_detector():
@@ -87,7 +87,7 @@ def init_carbon_monitoring():
                 project_id=PROJECT_ID,
                 service_name="light-model",
                 mode="ECO",
-                country_iso_code=os.getenv('CARBON_COUNTRY_CODE', 'HUN')
+                country_iso_code=os.getenv('CARBON_COUNTRY_CODE', 'AUT')
             )
             print("✓ Carbon Monitoring initialized (ECO mode)")
             return True
