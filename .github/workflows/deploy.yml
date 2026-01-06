@@ -2,11 +2,13 @@ name: Test and Deploy Heavy Model
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "**" ]  # Runs on pushes to ANY branch
+  pull_request:
+    branches: [ "**" ]  # Optional: Also runs on all Pull Requests
 
 permissions:
   contents: read
-  id-token: write # Required for Workload Identity Federation
+  id-token: write
 
 env:
   PROJECT_ID: project-bf5303f9-c6e6-4630-a08
@@ -33,12 +35,14 @@ jobs:
           
       - name: Run Unit Tests
         run: |
+          # Ensuring all model and service paths are included for pytest
           export PYTHONPATH=$PYTHONPATH:$(pwd)/models:$(pwd)/services/heavy-model
           pytest tests/unit/
-        # Matches project test structure
 
   deploy:
     needs: test
+    # This condition ensures the deploy job ONLY runs on the main branch
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +51,7 @@ jobs:
         id: auth
         uses: google-github-actions/auth@v2
         with:
+          project_id: 'project-bf5303f9-c6e6-4630-a08'
           workload_identity_provider: 'projects/48248613136/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
           service_account: 'github-actions-sa@project-bf5303f9-c6e6-4630-a08.iam.gserviceaccount.com'
 
