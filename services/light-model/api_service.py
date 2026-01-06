@@ -13,15 +13,26 @@ sys.path.insert(0, '/app/models')
 
 from isolation_forest_detector import IsolationForestDetector
 
+# Import carbon monitoring
+try:
+    sys.path.insert(0, '/app/common')
+    from carbon_monitoring import CarbonMonitor
+    CARBON_MONITORING_AVAILABLE = True
+except ImportError:
+    CarbonMonitor = None
+    CARBON_MONITORING_AVAILABLE = False
+
 app = Flask(__name__)
 
 # Global detector instance
 detector = None
+carbon_monitor = None
 
 # Configuration
 CONTAMINATION = float(os.getenv('CONTAMINATION', '0.003'))
 WINDOW_SIZE = int(os.getenv('WINDOW_SIZE', '50'))
 N_ESTIMATORS = int(os.getenv('N_ESTIMATORS', '50'))
+PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'local-project')
 
 
 def init_detector():
@@ -66,13 +77,37 @@ def init_detector_fallback():
         return False
 
 
+def init_carbon_monitoring():
+    """Initialize Carbon Monitoring for emissions tracking."""
+    global carbon_monitor
+    
+    if CARBON_MONITORING_AVAILABLE and CarbonMonitor:
+        try:
+            carbon_monitor = CarbonMonitor(
+                project_id=PROJECT_ID,
+                service_name="light-model",
+                mode="ECO",
+                country_iso_code=os.getenv('CARBON_COUNTRY_CODE', 'HUN')
+            )
+            print("✓ Carbon Monitoring initialized (ECO mode)")
+            return True
+        except Exception as e:
+            print(f"⚠ Carbon Monitoring not available: {e}")
+    
+    return False
+
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
+    carbon_stats = carbon_monitor.get_stats() if carbon_monitor else {}
     return jsonify({
         'status': 'healthy' if detector else 'degraded',
         'detector': 'isolation_forest',
         'ml_fitted': detector.is_fitted if detector else False,
+        'carbon_monitoring_enabled': carbon_monitor is not None,
+        'carbon_emissions_gco2e': carbon_stats.get('total_emissions_gco2e', 0),
+        'carbon_mode': carbon_stats.get('mode', 'ECO'),
         'timestamp': datetime.now().isoformat()
     })
 
@@ -112,7 +147,13 @@ def predict():
             return jsonify({'error': 'Missing "value" field'}), 400
         
         value = float(data['value'])
-        result = detector.detect(value)
+        
+        # Track carbon emissions for this inference
+        if carbon_monitor:
+            with carbon_monitor.track_inference(batch_size=1):
+                result = detector.detect(value)
+        else:
+            result = detector.detect(value)
         
         # Log detection
         if result['is_anomaly']:
@@ -122,6 +163,9 @@ def predict():
             print(f"   Score: {result.get('anomaly_score', 0):.4f} | Z: {result.get('z_score', 0):.2f} | Conf: {result.get('confidence', 0):.2%}")
         else:
             print(f"✓ Normal  | Value: {value:7.4f} | Z: {result.get('z_score', 0):.2f}")
+        
+        # Get carbon stats for response
+        carbon_stats = carbon_monitor.get_stats() if carbon_monitor else {}
         
         return jsonify({
             'value': float(value),
@@ -133,6 +177,7 @@ def predict():
             'z_score': float(result.get('z_score', 0.0)),
             'confidence': float(result.get('confidence', 0.0)),
             'ml_status': result.get('ml_status'),
+            'carbon_emissions_gco2e': carbon_stats.get('total_emissions_gco2e', 0),
             'timestamp': datetime.now().isoformat()
         })
         
@@ -220,7 +265,13 @@ def get_stats():
     if detector is None:
         return jsonify({'error': 'Detector not initialized'}), 503
     
-    return jsonify(detector.get_stats())
+    stats = detector.get_stats()
+    
+    # Add carbon stats if available
+    if carbon_monitor:
+        stats['carbon'] = carbon_monitor.get_stats()
+    
+    return jsonify(stats)
 
 
 @app.route('/reset', methods=['POST'])
@@ -241,6 +292,9 @@ if __name__ == '__main__':
     # Initialize detector on startup
     init_detector()
     
+    # Initialize carbon monitoring
+    init_carbon_monitoring()
+    
     print("\nStarting Flask API server...")
     print("Available endpoints:")
     print("  - GET  /health          - Health check with detector status")
@@ -251,6 +305,7 @@ if __name__ == '__main__':
     print("  - POST /reset           - Reset detector (requires re-warmup)")
     print("\nDetection: Hybrid Isolation Forest + Z-score (threshold=3.0σ)")
     print("Warmup: First 100 samples use statistical fallback")
+    print("Carbon: CodeCarbon tracking → GCP Cloud Monitoring (ECO mode)")
     print("=" * 70)
     
     # Run Flask app

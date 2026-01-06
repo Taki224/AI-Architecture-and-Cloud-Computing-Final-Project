@@ -18,3 +18,6 @@ google-cloud-logging>=3.8.0
 
 # Google Cloud Monitoring (for anomaly rate metrics)
 google-cloud-monitoring>=2.16.0
+
+# Carbon Monitoring
+codecarbon>=2.3.0

@@ -7,6 +7,7 @@ substitutions:
   _REPOSITORY: carbon-aware
   _SERVICE_NAME: heavy-model-service
   _SERVICE_ACCOUNT: heavy-model-sa
+  _TAG: latest
 
 steps:
   # Step 1: Build the Docker image
@@ -17,7 +18,7 @@ steps:
       - '-f'
       - 'deployment/docker/Dockerfile.heavy'
       - '-t'
-      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/heavy-model:${SHORT_SHA}'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/heavy-model:${_TAG}'
       - '-t'
       - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/heavy-model:latest'
       - '.'
@@ -38,7 +39,7 @@ steps:
       - 'run'
       - 'deploy'
       - '${_SERVICE_NAME}'
-      - '--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/heavy-model:${SHORT_SHA}'
+      - '--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/heavy-model:${_TAG}'
       - '--region=${_REGION}'
       - '--platform=managed'
       - '--service-account=${_SERVICE_ACCOUNT}@${PROJECT_ID}.iam.gserviceaccount.com'
@@ -62,15 +63,15 @@ steps:
       - |
         echo "Waiting for service to be ready..."
         sleep 10
-        SERVICE_URL=$(gcloud run services describe ${_SERVICE_NAME} --region=${_REGION} --format='value(status.url)')
-        echo "Service URL: $SERVICE_URL"
+        SERVICE_URL=$$(gcloud run services describe ${_SERVICE_NAME} --region=${_REGION} --format='value(status.url)')
+        echo "Service URL: $$SERVICE_URL"
         
         # Health check
-        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$SERVICE_URL/health")
-        if [ "$HTTP_STATUS" = "200" ]; then
-          echo "✓ Health check passed (HTTP $HTTP_STATUS)"
+        HTTP_STATUS=$$(curl -s -o /dev/null -w "%{http_code}" "$$SERVICE_URL/health")
+        if [ "$$HTTP_STATUS" = "200" ]; then
+          echo "✓ Health check passed (HTTP $$HTTP_STATUS)"
         else
-          echo "✗ Health check failed (HTTP $HTTP_STATUS)"
+          echo "✗ Health check failed (HTTP $$HTTP_STATUS)"
           exit 1
         fi
 
@@ -81,7 +82,7 @@ options:
 
 # Store images in Artifact Registry
 images:
-  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/heavy-model:${SHORT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/heavy-model:${_TAG}'
   - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPOSITORY}/heavy-model:latest'
 
 # Build timeout (10 minutes)

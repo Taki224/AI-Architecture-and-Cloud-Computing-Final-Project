@@ -25,3 +25,6 @@ flask>=3.0.0
 
 # Testing
 pytest>=7.0.0
+
+# Carbon Monitoring
+codecarbon>=2.3.0

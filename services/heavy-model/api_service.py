@@ -38,6 +38,15 @@ except ImportError:
     AnomalyMonitor = None
     MONITORING_AVAILABLE = False
 
+# Import carbon monitoring
+try:
+    sys.path.insert(0, '/app/common')
+    from carbon_monitoring import CarbonMonitor
+    CARBON_MONITORING_AVAILABLE = True
+except ImportError:
+    CarbonMonitor = None
+    CARBON_MONITORING_AVAILABLE = False
+
 # Flask app for health checks
 app = Flask(__name__)
 
@@ -46,6 +55,7 @@ detector = None
 publisher = None
 subscriber = None
 monitor = None
+carbon_monitor = None
 shutdown_event = threading.Event()
 
 # Configuration from environment
@@ -145,6 +155,26 @@ def init_monitoring():
     return False
 
 
+def init_carbon_monitoring():
+    """Initialize Carbon Monitoring for emissions tracking."""
+    global carbon_monitor
+    
+    if CARBON_MONITORING_AVAILABLE and CarbonMonitor:
+        try:
+            carbon_monitor = CarbonMonitor(
+                project_id=PROJECT_ID,
+                service_name="heavy-model",
+                mode="PERFORMANCE",
+                country_iso_code=os.getenv('CARBON_COUNTRY_CODE', 'HUN')
+            )
+            print("✓ Carbon Monitoring initialized (PERFORMANCE mode)")
+            return True
+        except Exception as e:
+            print(f"⚠ Carbon Monitoring not available: {e}")
+    
+    return False
+
+
 def process_batch(message_data: dict) -> dict:
     """
     Process a batch of sensor readings through the hybrid ML detector.
@@ -155,7 +185,7 @@ def process_batch(message_data: dict) -> dict:
     Returns:
         Dict with processed results including anomaly predictions
     """
-    global detector, monitor
+    global detector, monitor, carbon_monitor
     
     device_id = message_data.get('device_id', 'unknown')
     readings = message_data.get('readings', [])
@@ -168,41 +198,49 @@ def process_batch(message_data: dict) -> dict:
     
     results = []
     anomaly_count = 0
+    batch_size = len(readings)
     
-    for reading in readings:
-        timestamp = reading.get('timestamp', datetime.utcnow().timestamp())
-        vibration = reading.get('vibration', reading.get('value', 0.0))
+    # Use carbon tracking context manager if available
+    carbon_context = carbon_monitor.track_inference(batch_size=batch_size) if carbon_monitor else None
+    
+    try:
+        if carbon_context:
+            carbon_context.__enter__()
         
-        try:
-            # Run hybrid detection
-            detection = detector.detect(vibration)
+        for reading in readings:
+            timestamp = reading.get('timestamp', datetime.utcnow().timestamp())
+            vibration = reading.get('vibration', reading.get('value', 0.0))
             
-            is_anomaly = detection['is_anomaly']
-            confidence = detection.get('confidence', 0.0)
-            anomaly_score = detection.get('anomaly_score', 0.0)
-            z_score = detection.get('z_score', 0.0)
-            method = detection.get('method', 'unknown')
-            
-            result = {
-                'timestamp': float(timestamp),
-                'vibration': float(vibration),
-                'is_anomaly': bool(is_anomaly),
-                'confidence': float(confidence),
-                'anomaly_score': float(anomaly_score),
-                'z_score': float(z_score),
-                'method': str(method),
-                'ml_anomaly': bool(detection.get('ml_anomaly', False)),
-                'stat_anomaly': bool(detection.get('stat_anomaly', False))
-            }
-            results.append(result)
-            
-            if is_anomaly:
-                anomaly_count += 1
-                print(f"🚨 ANOMALY | Device: {device_id} | Value: {vibration:7.4f} | "
-                      f"Method: {method} | Score: {anomaly_score:.4f} | Z: {z_score:.2f}")
+            try:
+                # Run hybrid detection
+                detection = detector.detect(vibration)
                 
-                # Log to Cloud Monitoring
-                if monitor:
+                is_anomaly = detection['is_anomaly']
+                confidence = detection.get('confidence', 0.0)
+                anomaly_score = detection.get('anomaly_score', 0.0)
+                z_score = detection.get('z_score', 0.0)
+                method = detection.get('method', 'unknown')
+                
+                result = {
+                    'timestamp': float(timestamp),
+                    'vibration': float(vibration),
+                    'is_anomaly': bool(is_anomaly),
+                    'confidence': float(confidence),
+                    'anomaly_score': float(anomaly_score),
+                    'z_score': float(z_score),
+                    'method': str(method),
+                    'ml_anomaly': bool(detection.get('ml_anomaly', False)),
+                    'stat_anomaly': bool(detection.get('stat_anomaly', False))
+                }
+                results.append(result)
+                
+                if is_anomaly:
+                    anomaly_count += 1
+                    print(f"🚨 ANOMALY | Device: {device_id} | Value: {vibration:7.4f} | "
+                          f"Method: {method} | Score: {anomaly_score:.4f} | Z: {z_score:.2f}")
+                    
+                    # Log to Cloud Monitoring
+                    if monitor:
                     monitor.log_anomaly(
                         timestamp=timestamp,
                         vibration=vibration,
@@ -212,21 +250,31 @@ def process_batch(message_data: dict) -> dict:
             else:
                 print(f"✓ Normal  | Device: {device_id} | Value: {vibration:7.4f} | Z: {z_score:.2f}")
                 
-        except Exception as e:
-            print(f"✗ Error processing reading: {e}")
-            results.append({
-                'timestamp': timestamp,
-                'vibration': vibration,
-                'is_anomaly': False,
-                'confidence': 0.0,
-                'error': str(e)
-            })
+            except Exception as e:
+                print(f"✗ Error processing reading: {e}")
+                results.append({
+                    'timestamp': timestamp,
+                    'vibration': vibration,
+                    'is_anomaly': False,
+                    'confidence': 0.0,
+                    'error': str(e)
+                })
+    finally:
+        # Exit carbon tracking context
+        if carbon_context:
+            carbon_context.__exit__(None, None, None)
     
     # Summary logging
     stats = detector.get_stats()
+    carbon_stats = carbon_monitor.get_stats() if carbon_monitor else {}
+    
     if anomaly_count > 0:
         print(f"\n📊 Batch Summary: {anomaly_count}/{len(readings)} anomalies detected "
-              f"({anomaly_count/len(readings)*100:.1f}%) | ML fitted: {stats.get('ml_fitted', False)}\n")
+              f"({anomaly_count/len(readings)*100:.1f}%) | ML fitted: {stats.get('ml_fitted', False)}")
+    
+    if carbon_stats:
+        print(f"🌱 Carbon: {carbon_stats.get('total_emissions_gco2e', 0):.6f} gCO₂e total | "
+              f"{carbon_stats.get('avg_emissions_per_inference_gco2e', 0):.6f} gCO₂e/inference\n")
     
     return {
         'device_id': device_id,
@@ -234,6 +282,7 @@ def process_batch(message_data: dict) -> dict:
         'count': len(results),
         'anomalies_detected': anomaly_count,
         'ml_fitted': stats.get('ml_fitted', False),
+        'carbon_emissions_gco2e': carbon_stats.get('total_emissions_gco2e', 0) if carbon_stats else None,
         'processed_at': datetime.utcnow().isoformat()
     }
 
@@ -332,6 +381,7 @@ def start_subscriber():
 def health_check():
     """Health check endpoint for Cloud Run."""
     stats = detector.get_stats() if detector else {}
+    carbon_stats = carbon_monitor.get_stats() if carbon_monitor else {}
     return jsonify({
         'status': 'healthy' if detector else 'degraded',
         'detector': 'hybrid_isolation_forest_zscore',
@@ -340,6 +390,9 @@ def health_check():
         'anomaly_rate': stats.get('anomaly_rate', 0.0),
         'pubsub_connected': publisher is not None and subscriber is not None,
         'monitoring_enabled': monitor is not None,
+        'carbon_monitoring_enabled': carbon_monitor is not None,
+        'carbon_emissions_gco2e': carbon_stats.get('total_emissions_gco2e', 0),
+        'carbon_mode': carbon_stats.get('mode', 'PERFORMANCE'),
         'n_estimators': N_ESTIMATORS,
         'timestamp': datetime.utcnow().isoformat()
     })
@@ -400,6 +453,7 @@ def main():
         sys.exit(1)
     
     init_monitoring()
+    init_carbon_monitoring()
     
     # Start Flask in background thread
     flask_thread = threading.Thread(target=run_flask, daemon=True)
@@ -433,6 +487,9 @@ def main():
         
         if monitor:
             monitor.flush()
+        
+        if carbon_monitor:
+            carbon_monitor.flush()
         
         print("[Service] Goodbye!")
 

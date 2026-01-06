@@ -12,3 +12,9 @@ flask>=3.0.0
 
 # Google Cloud Pub/Sub (optional for local multi-instance testing)
 google-cloud-pubsub>=2.23.0
+
+# Carbon Monitoring
+codecarbon>=2.3.0
+
+# Google Cloud Monitoring (for carbon metrics export)
+google-cloud-monitoring>=2.16.0

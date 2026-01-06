@@ -1,0 +1,139 @@
+{
+  "displayName": "Carbon Emissions Dashboard - Anomaly Detection",
+  "gridLayout": {
+    "columns": "2",
+    "widgets": [
+      {
+        "title": "Total Carbon Emissions by Service (gCO₂e)",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"custom.googleapis.com/carbon/emissions_gco2e\"",
+                  "aggregation": {
+                    "alignmentPeriod": "60s",
+                    "perSeriesAligner": "ALIGN_SUM",
+                    "crossSeriesReducer": "REDUCE_SUM",
+                    "groupByFields": ["metric.labels.service", "metric.labels.mode"]
+                  }
+                }
+              },
+              "plotType": "STACKED_AREA"
+            }
+          ],
+          "yAxis": {
+            "label": "gCO₂e",
+            "scale": "LINEAR"
+          }
+        }
+      },
+      {
+        "title": "Emissions per Inference Period",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"custom.googleapis.com/carbon/emissions_gco2e\"",
+                  "aggregation": {
+                    "alignmentPeriod": "60s",
+                    "perSeriesAligner": "ALIGN_MEAN",
+                    "groupByFields": ["metric.labels.service", "metric.labels.mode"]
+                  }
+                }
+              },
+              "plotType": "LINE"
+            }
+          ],
+          "yAxis": {
+            "label": "gCO₂e per period",
+            "scale": "LINEAR"
+          }
+        }
+      },
+      {
+        "title": "Cumulative Emissions - Heavy Model (PERFORMANCE)",
+        "scorecard": {
+          "timeSeriesQuery": {
+            "timeSeriesFilter": {
+              "filter": "metric.type=\"custom.googleapis.com/carbon/total_emissions_gco2e\" AND metric.labels.service=\"heavy-model\"",
+              "aggregation": {
+                "alignmentPeriod": "3600s",
+                "perSeriesAligner": "ALIGN_MAX"
+              }
+            }
+          },
+          "sparkChartView": {
+            "sparkChartType": "SPARK_LINE"
+          }
+        }
+      },
+      {
+        "title": "Cumulative Emissions - Light Model (ECO)",
+        "scorecard": {
+          "timeSeriesQuery": {
+            "timeSeriesFilter": {
+              "filter": "metric.type=\"custom.googleapis.com/carbon/total_emissions_gco2e\" AND metric.labels.service=\"light-model\"",
+              "aggregation": {
+                "alignmentPeriod": "3600s",
+                "perSeriesAligner": "ALIGN_MAX"
+              }
+            }
+          },
+          "sparkChartView": {
+            "sparkChartType": "SPARK_LINE"
+          }
+        }
+      },
+      {
+        "title": "Inference Count by Service",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"custom.googleapis.com/carbon/inference_count\"",
+                  "aggregation": {
+                    "alignmentPeriod": "60s",
+                    "perSeriesAligner": "ALIGN_SUM",
+                    "groupByFields": ["metric.labels.service", "metric.labels.mode"]
+                  }
+                }
+              },
+              "plotType": "STACKED_BAR"
+            }
+          ],
+          "yAxis": {
+            "label": "Inferences",
+            "scale": "LINEAR"
+          }
+        }
+      },
+      {
+        "title": "Average Emissions per Inference (gCO₂e)",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"custom.googleapis.com/carbon/emissions_gco2e\"",
+                  "aggregation": {
+                    "alignmentPeriod": "300s",
+                    "perSeriesAligner": "ALIGN_RATE",
+                    "groupByFields": ["metric.labels.service"]
+                  }
+                }
+              },
+              "plotType": "LINE"
+            }
+          ],
+          "yAxis": {
+            "label": "gCO₂e/s",
+            "scale": "LINEAR"
+          }
+        }
+      }
+    ]
+  }
+}

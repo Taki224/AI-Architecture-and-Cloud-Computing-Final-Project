@@ -19,6 +19,9 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 # Copy the light model service code
 COPY services/light-model/ /app/
 
+# Copy shared common code (carbon monitoring)
+COPY services/common/ /app/common/
+
 # Copy shared model code
 COPY models/isolation_forest_detector.py /app/models/
 COPY models/statistical_model.py /app/models/
