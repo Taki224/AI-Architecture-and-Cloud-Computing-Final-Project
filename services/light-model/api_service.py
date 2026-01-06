@@ -29,9 +29,10 @@ detector = None
 carbon_monitor = None
 
 # Configuration
-CONTAMINATION = float(os.getenv('CONTAMINATION', '0.003'))
+CONTAMINATION = float(os.getenv('CONTAMINATION', '0.10'))
 WINDOW_SIZE = int(os.getenv('WINDOW_SIZE', '50'))
 N_ESTIMATORS = int(os.getenv('N_ESTIMATORS', '50'))
+Z_THRESHOLD = float(os.getenv('Z_THRESHOLD', '3.5'))
 PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'project-bf5303f9-c6e6-4630-a08')
 
 
@@ -65,12 +66,14 @@ def init_detector_fallback():
         detector = IsolationForestDetector(
             contamination=CONTAMINATION,
             window_size=WINDOW_SIZE,
-            n_estimators=N_ESTIMATORS
+            n_estimators=N_ESTIMATORS,
+            z_threshold=Z_THRESHOLD
         )
         print(f"✓ IsolationForestDetector initialized (runtime fallback)")
         print(f"  - Contamination: {CONTAMINATION}")
         print(f"  - Window size: {WINDOW_SIZE}")
         print(f"  - Isolation Forest estimators: {N_ESTIMATORS}")
+        print(f"  - Z-score threshold: {Z_THRESHOLD}")
         return True
     except Exception as e:
         print(f"✗ Failed to initialize detector: {e}")

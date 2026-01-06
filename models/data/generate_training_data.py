@@ -4,7 +4,10 @@ Generates large dataset using same sensor simulation logic as GUI
 """
 import csv
 import time
-from sensor_simulator import VibrationSensor
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+from services.edge.local_sensor_gui import VibrationSensor
 
 
 def generate_training_data(

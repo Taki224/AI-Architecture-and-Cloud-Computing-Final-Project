@@ -101,7 +101,8 @@ def train_hybrid_model(X, y, n_estimators: int, model_name: str,
 
 
 def train_light_model(X, y, n_estimators: int, model_name: str,
-                      contamination: float = 0.003, window_size: int = 50):
+                      contamination: float = 0.10, window_size: int = 50,
+                      z_threshold: float = 3.5):
     """
     Train an IsolationForestDetector (ML only, for edge deployment).
     
@@ -124,13 +125,15 @@ def train_light_model(X, y, n_estimators: int, model_name: str,
     print(f"  - n_estimators: {n_estimators}")
     print(f"  - contamination: {contamination}")
     print(f"  - window_size: {window_size}")
+    print(f"  - z_threshold: {z_threshold}")
     
     # Initialize model
     detector = IsolationForestDetector(
         contamination=contamination,
         window_size=window_size,
         n_estimators=n_estimators,
-        min_samples_for_fit=100
+        min_samples_for_fit=100,
+        z_threshold=z_threshold
     )
     
     # Train by passing all samples through the detector

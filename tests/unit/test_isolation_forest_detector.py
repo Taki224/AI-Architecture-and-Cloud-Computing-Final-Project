@@ -22,10 +22,11 @@ class TestIsolationForestInitialization:
         """Test detector can be created with defaults."""
         detector = IsolationForestDetector()
         
-        assert detector.contamination == 0.003
+        assert detector.contamination == 0.10
         assert detector.window_size == 50
         assert detector.n_estimators == 100
-        assert detector.min_samples_for_fit == 100
+        assert detector.min_samples_for_fit == 200
+        assert detector.z_threshold == 3.5
         assert detector.is_fitted is False
 
     def test_custom_parameters(self):
@@ -34,13 +35,15 @@ class TestIsolationForestInitialization:
             contamination=0.01,
             window_size=30,
             n_estimators=50,
-            min_samples_for_fit=50
+            min_samples_for_fit=50,
+            z_threshold=4.0
         )
         
         assert detector.contamination == 0.01
         assert detector.window_size == 30
         assert detector.n_estimators == 50
         assert detector.min_samples_for_fit == 50
+        assert detector.z_threshold == 4.0
 
 
 class TestWarmupPhase:
@@ -87,7 +90,7 @@ class TestWindowFilling:
     """Test sliding window filling phase."""
 
     def test_filling_window_after_fit(self):
-        """Test that detector fills window after fitting."""
+        """Test that detector works after fitting with Z-score detection."""
         detector = IsolationForestDetector(
             min_samples_for_fit=10,
             window_size=20
@@ -97,11 +100,11 @@ class TestWindowFilling:
         for i in range(10):
             detector.detect(float(i) * 0.1)
         
-        # Now should be filling window
+        # After fitting, detector uses Z-score detection so it's immediately active
         result = detector.detect(0.5)
         
-        # Could be filling_window or active depending on window state
-        assert result["status"] in ["filling_window", "just_fitted"]
+        # With the new Z-score based detection, status is active after fitting
+        assert result["status"] in ["active", "just_fitted"]
 
 
 class TestDetectionResults:
@@ -189,15 +192,18 @@ class TestNormalSequence:
 
     def test_normal_readings_sequence(self, normal_readings):
         """Test detector on sequence of normal readings."""
-        detector = IsolationForestDetector(min_samples_for_fit=20)
+        detector = IsolationForestDetector(
+            min_samples_for_fit=20,
+            window_size=10  # Smaller window so ML can fit with enough samples
+        )
         
         results = []
         for reading in normal_readings[:50]:
             result = detector.detect(reading)
             results.append(result)
         
-        # Should complete warmup
-        assert any(r["status"] in ["just_fitted", "filling_window", "active"] 
+        # Should complete warmup and be active
+        assert any(r["status"] in ["just_fitted", "active"] 
                    for r in results)
 
     def test_training_data_collection(self):

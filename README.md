@@ -9,7 +9,6 @@
   - [Deployment Diagram](#deployment-diagram)
   - [Sequence Diagram](#sequence-diagram)
 - [Current Implementation Status](#current-implementation-status)
-- [Roadmap](#roadmap)
 - [Getting Started](#getting-started)
 - [Technology Stack](#technology-stack)
 
@@ -44,14 +43,17 @@ The system implements two processing modes, manually selectable via GUI. Both mo
 
 **Warmup Phase:** First 100 samples use statistical-only detection while the Isolation Forest model trains on incoming data. After warmup, the full ensemble activates.
 
-### Carbon Awareness Roadmap
+### Carbon Awareness
 
-Mode switching is **always manual** (operator toggles via GUI). Phase 4 will integrate a Python library for carbon consumption measurement, enabling:
-- Per-mode carbon metrics logging (gCO₂e per inference)
+Mode switching is **always manual** (operator toggles via GUI). The system integrates **CodeCarbon** for carbon consumption measurement, providing:
+- Per-inference carbon emission tracking (gCO₂e)
+- Custom metrics exported to **GCP Cloud Monitoring** with service/mode labels
 - Data-driven comparison of PERFORMANCE vs ECO carbon footprints
-- Visibility into the environmental impact of each processing mode
+- Real-time visibility into the environmental impact of each processing mode
 
-Note: Carbon measurement is for **observability only**—the system will not automatically switch modes based on carbon intensity.
+![Cloud Monitoring Dashboard](assets/cloud_monitor_dashboard.png)
+
+Note: Carbon measurement is for **observability only**—the system does not automatically switch modes based on carbon intensity.
 
 ---
 
@@ -350,21 +352,49 @@ See [plans/class.md](plans/class.md) for class definitions including:
   - Complete GCP setup documentation
   - Service account setup documentation with required IAM roles
 
----
+### ✅ Phase 3: CI/CD & Testing (Completed)
 
-## Roadmap
+- [x] **GitHub Actions Workflow**
+  - Automated test and deploy pipeline (`.github/workflows/deploy.yml`)
+  - Runs unit tests on every push to any branch
+  - Deploys to Cloud Run only on `main` branch
+  - Workload Identity Federation for secure GCP authentication
+  - Python 3.11 environment with dependency caching
 
-### 🎯 Phase 3: CI/CD & Testing
+![GitHub Actions Pipeline](assets/github_action.png)
 
-- [ ] GitHub Actions workflow for automated Cloud Run deployment
-- [ ] Unit tests with pytest
-- [ ] Integration tests with Pub/Sub emulator
+- [x] **Cloud Build Pipeline**
+  - Cloud Build configuration (`cloudbuild.yaml`) for GCP-native CI/CD
+  - Multi-step pipeline: Build → Push → Deploy → Verify health
+  - Automatic deployment to Cloud Run on `europe-north1`
+  - Artifact Registry integration for Docker images
+  - Build timeout and error handling
 
-### 🌱 Phase 4: Carbon Awareness
+- [x] **Testing Suite**
+  - pytest-based testing framework with shared fixtures
+  - Unit tests for all core components:
+    - `test_hybrid_detector.py`: Ensemble detector tests
+    - `test_isolation_forest_detector.py`: ML model tests
+    - `test_statistical_model.py`: Z-score detector tests
+    - `test_carbon_monitoring.py`: Carbon tracking tests
+    - `test_light_api.py`: Light model API tests
+    - `test_heavy_api.py`: Heavy model API tests
+  - Mock-based testing for GCP dependencies
+  - Configurable fixtures for normal/anomaly readings
 
-- [ ] Integrate Python library for carbon consumption measurement
-- [ ] Log carbon metrics per mode (PERFORMANCE vs ECO)
-- [ ] Automated mode switching based on carbon intensity
+### ✅ Phase 4: Carbon Awareness (Completed)
+
+- [x] **CodeCarbon Integration**
+  - `CarbonMonitor` class wrapping CodeCarbon EmissionsTracker
+  - Per-inference carbon emission tracking
+  - Context manager for easy tracking: `with monitor.track_inference():`
+  - Configurable country/region for carbon intensity
+
+- [x] **GCP Cloud Monitoring Export**
+  - Custom metric descriptors: `carbon/emissions_gco2e`, `carbon/total_emissions_gco2e`, `carbon/inference_count`
+  - Labels by service (`heavy-model`/`light-model`) and mode (`PERFORMANCE`/`ECO`)
+  - Background reporter thread for periodic metric export (60s intervals)
+  - Graceful degradation when Cloud Monitoring unavailable
 
 ---
 
@@ -383,21 +413,36 @@ See [plans/class.md](plans/class.md) for class definitions including:
    ```bash
    git clone <repository-url>
    cd FinalProject
+   pip install -r requirements.txt
    ```
 
-2. **Train Models**
+2. **Generate Training Data & Train Models**
    ```bash
    cd models
-   pip install -r requirements.txt
-   python train_models.py
+   python data/generate_training_data.py  # Creates training_data.csv and validation_data.csv
+   python train_models.py                  # Trains and evaluates both models
+   ```
+   
+   This will:
+   - Generate synthetic vibration sensor data with realistic anomalies
+   - Train the Heavy Model (HybridAnomalyDetector, 200 estimators)
+   - Train the Light Model (IsolationForestDetector, 50 estimators)
+   - Evaluate both models on the validation set
+   - Save models as `model_heavy.pkl` and `model_light.pkl`
+
+3. **Run Tests**
+   ```bash
+   cd tests
+   pip install -r test_requirements.txt
+   pytest unit/ -v
    ```
 
-3. **Start Services**
+4. **Start Services**
    ```bash
    docker-compose up -d
    ```
 
-4. **Run Edge Device**
+5. **Run Edge Device**
    ```bash
    cd services/edge
    pip install -r requirements.txt
@@ -405,11 +450,14 @@ See [plans/class.md](plans/class.md) for class definitions including:
    python local_sensor_gui.py
    ```
 
-5. **Use the Application**
+6. **Use the Application**
    - Click "▶ Start Sensor"
-   - Watch data flow in PERFORMANCE mode (default)
-   - Toggle to "🌱 ECO" to test local inference
-   - View logs: `docker-compose logs -f heavy-model`
+   - Watch real-time sensor data visualization
+   - Toggle between PERFORMANCE and ECO modes
+   - View anomaly alerts and confidence scores
+   - View logs: `docker-compose logs -f`
+
+![Edge Device GUI](assets/gui.png)
 
 ### Deploy to GCP
 
@@ -454,8 +502,9 @@ gcloud builds submit --config=deployment/gcp/cloudbuild.yaml
 - **Cloud Monitoring**: Metrics and alerting
 
 ### Development Tools
-- **pytest**: Testing framework (planned)
-- **GitHub Actions**: CI/CD (planned)
+- **pytest**: Testing framework with fixtures and mocks
+- **Cloud Build**: CI/CD automation for GCP deployment
+- **CodeCarbon**: Carbon emissions tracking library
 - **Mermaid**: Architecture diagrams (GitHub-native rendering)
 
 ---
@@ -468,6 +517,8 @@ FinalProject/
 │   ├── edge/                    # Edge device application
 │   │   ├── local_sensor_gui.py  # Unified GUI + sensor + Pub/Sub
 │   │   └── requirements.txt
+│   ├── common/                  # Shared utilities
+│   │   └── carbon_monitoring.py # Carbon emissions tracking
 │   ├── light-model/             # Local REST API service (ECO mode)
 │   │   ├── api_service.py
 │   │   └── requirements.txt
@@ -480,15 +531,35 @@ FinalProject/
 │   │   ├── Dockerfile.light
 │   │   └── Dockerfile.heavy
 │   └── gcp/                     # GCP deployment configs
-│       ├── cloudbuild.yaml
+│       ├── cloudbuild.yaml      # CI/CD pipeline configuration
+│       ├── carbon-dashboard.json # Cloud Monitoring dashboard
 │       └── pubsub-init.sh
 ├── models/                      # ML model training
-│   ├── train_models.py
-│   ├── hybrid_detector.py
+│   ├── train_models.py          # Training pipeline with validation
+│   ├── hybrid_detector.py       # Ensemble detector (ML + Z-score)
 │   ├── isolation_forest_detector.py
-|.  ├── statistical_model.py
+│   ├── statistical_model.py
 │   └── data/
-|.      └── generate_training_data.py
+│       ├── generate_training_data.py  # Synthetic data generator
+│       ├── training_data.csv
+│       └── validation_data.csv
+├── tests/                       # Test suite
+│   ├── conftest.py              # Shared fixtures
+│   ├── test_requirements.txt
+│   └── unit/                    # Unit tests
+│       ├── test_carbon_monitoring.py
+│       ├── test_hybrid_detector.py
+│       ├── test_isolation_forest_detector.py
+│       ├── test_statistical_model.py
+│       ├── test_light_api.py
+│       └── test_heavy_api.py
+├── .github/
+│   └── workflows/
+│       └── deploy.yml           # GitHub Actions CI/CD pipeline
+├── assets/                      # Images and screenshots
+│   ├── gui.png                  # Edge device GUI screenshot
+│   ├── github_action.png        # CI/CD pipeline screenshot
+│   └── cloud_monitor_dashboard.png
 ├── docs/                        # Documentation
 │   └── GCP_SETUP.md            # Cloud deployment guide
 ├── plans/                       # Architecture diagrams (Mermaid)

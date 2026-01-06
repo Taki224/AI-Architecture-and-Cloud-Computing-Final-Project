@@ -16,28 +16,44 @@ class IsolationForestDetector:
     Extracts statistical features from a sliding window of readings to detect
     both point anomalies (single outliers) and contextual anomalies (unusual patterns).
     
+    This detector uses a Z-score based approach for anomaly detection during warmup
+    and after fitting, to avoid the high false positive rate that occurs when
+    Isolation Forest learns from contaminated runtime data.
+    
     Parameters:
-        contamination (float): Expected proportion of anomalies (default: 0.003 = 0.3%)
+        contamination (float): Expected proportion of anomalies (default: 0.10 = 10%)
         window_size (int): Size of sliding window for feature extraction (default: 50)
         n_estimators (int): Number of trees in the forest (default: 100)
-        min_samples_for_fit (int): Minimum samples before ML model activates (default: 100)
+        min_samples_for_fit (int): Minimum samples before ML model activates (default: 200)
+        z_threshold (float): Z-score threshold for anomaly detection (default: 3.5)
     """
     
     def __init__(
         self,
-        contamination: float = 0.003,
+        contamination: float = 0.10,
         window_size: int = 50,
         n_estimators: int = 100,
-        min_samples_for_fit: int = 100
+        min_samples_for_fit: int = 200,
+        z_threshold: float = 3.5
     ):
         self.contamination = contamination
         self.window_size = window_size
         self.n_estimators = n_estimators
         self.min_samples_for_fit = min_samples_for_fit
+        self.z_threshold = z_threshold
         
         self.window = deque(maxlen=window_size)
         self.training_data = []
         self.is_fitted = False
+        
+        # Running statistics for robust warmup (using Welford's algorithm)
+        self._n = 0
+        self._mean = 0.0
+        self._M2 = 0.0
+        
+        # Baseline statistics learned from training (for Z-score detection)
+        self.baseline_mean = None
+        self.baseline_std = None
         
         self.model = IsolationForest(
             contamination=contamination,
@@ -45,6 +61,37 @@ class IsolationForestDetector:
             random_state=42,
             n_jobs=-1  # Use all CPU cores
         )
+    
+    def _update_running_stats(self, value: float):
+        """
+        Update running mean and variance using Welford's online algorithm.
+        This allows us to track statistics without storing all values.
+        """
+        self._n += 1
+        delta = value - self._mean
+        self._mean += delta / self._n
+        delta2 = value - self._mean
+        self._M2 += delta * delta2
+    
+    def _get_running_std(self) -> float:
+        """Get the running standard deviation."""
+        if self._n < 2:
+            return 1.0  # Avoid division by zero
+        return np.sqrt(self._M2 / (self._n - 1))
+    
+    def _compute_z_score(self, value: float) -> float:
+        """Compute Z-score for a value using baseline or running statistics."""
+        if self.baseline_mean is not None and self.baseline_std is not None:
+            mean = self.baseline_mean
+            std = self.baseline_std
+        else:
+            mean = self._mean
+            std = self._get_running_std()
+        
+        if std < 0.001:  # Avoid division by very small numbers
+            std = 1.0
+        
+        return abs(value - mean) / std
     
     def _extract_features(self, values: list) -> np.ndarray:
         """
@@ -75,6 +122,13 @@ class IsolationForestDetector:
         """
         Detect if current reading is anomalous.
         
+        Uses a hybrid approach:
+        1. During warmup: Collects data and uses running Z-score for detection
+        2. After fitting: Uses Z-score threshold with ML as confirmation
+        
+        The Z-score approach is primary because Isolation Forest can have high
+        false positive rates when trained on limited or contaminated data.
+        
         Args:
             value: Current sensor reading
             
@@ -82,10 +136,16 @@ class IsolationForestDetector:
             dict with keys:
                 - is_anomaly: bool
                 - anomaly_score: float (higher = more anomalous)
+                - z_score: float
                 - status: str ('warming_up', 'filling_window', 'active')
                 - samples_needed: int (only during warmup)
         """
         self.window.append(value)
+        
+        # Update running statistics (excluding extreme outliers to build robust baseline)
+        z_score = self._compute_z_score(value)
+        if z_score < 5.0:  # Only update stats with non-extreme values
+            self._update_running_stats(value)
         
         # Collect training data during warmup
         if not self.is_fitted:
@@ -97,49 +157,72 @@ class IsolationForestDetector:
                 return {
                     "is_anomaly": False,
                     "anomaly_score": 0.0,
+                    "z_score": z_score,
                     "status": "just_fitted",
                     "samples_needed": 0,
                     "method": "ml_warmup"
                 }
             
+            # During warmup, use Z-score for anomaly detection
+            is_anomaly = z_score > self.z_threshold
+            
             return {
-                "is_anomaly": False,
-                "anomaly_score": 0.0,
+                "is_anomaly": is_anomaly,
+                "anomaly_score": min(1.0, z_score / 5.0),  # Normalize to 0-1
+                "z_score": z_score,
                 "status": "warming_up",
                 "samples_needed": int(samples_needed),
-                "method": "ml_warmup"
+                "method": "statistical_warmup"
             }
         
-        # Need full window for feature extraction
-        if len(self.window) < self.window_size:
-            return {
-                "is_anomaly": False,
-                "anomaly_score": 0.0,
-                "status": "filling_window",
-                "samples_needed": int(self.window_size - len(self.window)),
-                "method": "ml_warmup"
-            }
+        # After fitting: Use Z-score as primary detection method
+        # This is more reliable than Isolation Forest on streaming data
+        is_anomaly = z_score > self.z_threshold
+        anomaly_score = min(1.0, z_score / 5.0)  # Normalize to 0-1
         
-        # Extract features and predict
-        features = self._extract_features(list(self.window))
-        prediction = self.model.predict(features)[0]
-        raw_score = self.model.score_samples(features)[0]
-        
-        # Convert score: Isolation Forest returns negative scores, more negative = more anomalous
-        # Normalize to 0-1 range where higher = more anomalous
-        anomaly_score = max(0.0, min(1.0, -raw_score))
+        # If we have enough window data, we can also get ML prediction as secondary signal
+        ml_anomaly = False
+        if len(self.window) >= self.window_size:
+            features = self._extract_features(list(self.window))
+            prediction = self.model.predict(features)[0]
+            ml_anomaly = prediction == -1
         
         return {
-            "is_anomaly": bool(prediction == -1),
+            "is_anomaly": is_anomaly,
             "anomaly_score": float(anomaly_score),
-            "raw_score": float(raw_score),
+            "z_score": float(z_score),
+            "ml_anomaly": ml_anomaly,
             "status": "active",
-            "method": "ml_only"
+            "method": "ensemble" if ml_anomaly and is_anomaly else "statistical"
         }
     
     def _fit_model(self):
-        """Fit the Isolation Forest model on collected training data."""
-        # Build feature matrix from training data
+        """
+        Fit the Isolation Forest model on collected training data.
+        Also computes baseline statistics for Z-score detection.
+        """
+        # Compute baseline statistics from training data
+        # Filter out extreme values (>4 sigma from running mean) before computing baseline
+        values = np.array(self.training_data)
+        running_std = self._get_running_std()
+        
+        # Use robust filtering: exclude values > 4 sigma from running mean
+        if running_std > 0.001:
+            mask = np.abs(values - self._mean) < 4 * running_std
+            filtered_values = values[mask]
+            if len(filtered_values) > 20:
+                self.baseline_mean = np.mean(filtered_values)
+                self.baseline_std = np.std(filtered_values)
+            else:
+                self.baseline_mean = self._mean
+                self.baseline_std = running_std
+        else:
+            self.baseline_mean = self._mean
+            self.baseline_std = running_std
+        
+        print(f"✓ Baseline statistics: mean={self.baseline_mean:.4f}, std={self.baseline_std:.4f}")
+        
+        # Build feature matrix from training data (using only filtered data)
         temp_window = deque(maxlen=self.window_size)
         features_list = []
         
@@ -155,13 +238,22 @@ class IsolationForestDetector:
             self.is_fitted = True
             print(f"✓ IsolationForest fitted on {len(features_list)} samples")
         else:
-            print(f"⚠ Not enough samples for fitting: {len(features_list)}")
+            print(f"⚠ Not enough samples for ML fitting: {len(features_list)}, using Z-score only")
+            self.is_fitted = True  # Mark as fitted so we use the baseline stats
     
     def reset(self):
         """Reset detector state for retraining."""
         self.window.clear()
         self.training_data = []
         self.is_fitted = False
+        
+        # Reset running statistics
+        self._n = 0
+        self._mean = 0.0
+        self._M2 = 0.0
+        self.baseline_mean = None
+        self.baseline_std = None
+        
         self.model = IsolationForest(
             contamination=self.contamination,
             n_estimators=self.n_estimators,
