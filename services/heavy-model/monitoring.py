@@ -71,10 +71,8 @@ class AnomalyMonitor:
         """Initialize Cloud Monitoring client and create metric descriptors."""
         try:
             from google.cloud import monitoring_v3
-            from google.cloud.monitoring_v3 import types
             
             self._monitoring_client = monitoring_v3.MetricServiceClient()
-            self._types = types
             print("[Monitor] Cloud Monitoring initialized")
             self._create_metric_descriptor()
             
@@ -89,14 +87,14 @@ class AnomalyMonitor:
             return
         
         try:
-            from google.cloud.monitoring_v3 import types
+            from google.api import metric_pb2 as api_metric
             
             project_name = f"projects/{self.project_id}"
             
-            descriptor = types.MetricDescriptor()
+            descriptor = api_metric.MetricDescriptor()
             descriptor.type = self.METRIC_TYPE
-            descriptor.metric_kind = types.MetricDescriptor.MetricKind.GAUGE
-            descriptor.value_type = types.MetricDescriptor.ValueType.DOUBLE
+            descriptor.metric_kind = api_metric.MetricDescriptor.MetricKind.GAUGE
+            descriptor.value_type = api_metric.MetricDescriptor.ValueType.DOUBLE
             descriptor.description = "Anomaly detection rate per minute (60-second rolling window)"
             descriptor.display_name = "Anomaly Detection Rate"
             descriptor.unit = "anomalies/min"
@@ -156,11 +154,11 @@ class AnomalyMonitor:
             return
         
         try:
-            from google.cloud.monitoring_v3 import types
+            from google.cloud import monitoring_v3
             
             project_name = f"projects/{self.project_id}"
             
-            series = types.TimeSeries()
+            series = monitoring_v3.TimeSeries()
             series.metric.type = self.METRIC_TYPE
             series.resource.type = "global"
             
@@ -168,25 +166,39 @@ class AnomalyMonitor:
             seconds = int(now)
             nanos = int((now - seconds) * 10**9)
             
-            interval = types.TimeInterval({
+            interval = monitoring_v3.TimeInterval({
                 "end_time": {"seconds": seconds, "nanos": nanos}
             })
             
-            point = types.Point({
+            point = monitoring_v3.Point({
                 "interval": interval,
                 "value": {"double_value": value}
             })
             
             series.points = [point]
             
-            self._monitoring_client.create_time_series(
-                name=project_name,
-                time_series=[series],
-                timeout=10.0  # 10 second timeout to prevent 504 errors
-            )
+            # Try to write with retries
+            max_retries = 2
+            for attempt in range(max_retries + 1):
+                try:
+                    self._monitoring_client.create_time_series(
+                        name=project_name,
+                        time_series=[series],
+                        timeout=5.0  # Shorter timeout for faster failures
+                    )
+                    break  # Success
+                except Exception as retry_err:
+                    if attempt < max_retries and "504" in str(retry_err):
+                        # Retry on 504 errors
+                        continue
+                    else:
+                        # Give up after retries
+                        raise retry_err
             
         except Exception as e:
-            print(f"[Monitor] Failed to write metric: {e}")
+            # Silently skip 504 errors to avoid log spam
+            if "504" not in str(e):
+                print(f"[Monitor] Failed to write metric: {e}")
     
     def log_anomaly(
         self,

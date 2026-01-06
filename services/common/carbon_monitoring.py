@@ -19,7 +19,7 @@ from codecarbon import EmissionsTracker
 
 # GCP Cloud Monitoring
 from google.cloud import monitoring_v3
-from google.cloud.monitoring_v3 import types
+from google.api import metric_pb2 as api_metric
 
 
 class CarbonMonitor:
@@ -125,23 +125,23 @@ class CarbonMonitor:
         
         for desc_config in descriptors:
             try:
-                descriptor = types.MetricDescriptor()
+                descriptor = api_metric.MetricDescriptor()
                 descriptor.type = desc_config["type"]
-                descriptor.metric_kind = types.MetricDescriptor.MetricKind.GAUGE
-                descriptor.value_type = types.MetricDescriptor.ValueType.DOUBLE if "emissions" in desc_config["type"] else types.MetricDescriptor.ValueType.INT64
+                descriptor.metric_kind = api_metric.MetricDescriptor.MetricKind.GAUGE
+                descriptor.value_type = api_metric.MetricDescriptor.ValueType.DOUBLE if "emissions" in desc_config["type"] else api_metric.MetricDescriptor.ValueType.INT64
                 descriptor.description = desc_config["description"]
                 descriptor.display_name = desc_config["display_name"]
                 descriptor.unit = desc_config["unit"]
                 
                 # Add labels
-                descriptor.labels.append(types.LabelDescriptor(
+                descriptor.labels.append(api_metric.LabelDescriptor(
                     key="service",
-                    value_type=types.LabelDescriptor.ValueType.STRING,
+                    value_type=api_metric.LabelDescriptor.ValueType.STRING,
                     description="Service name (heavy-model or light-model)"
                 ))
-                descriptor.labels.append(types.LabelDescriptor(
+                descriptor.labels.append(api_metric.LabelDescriptor(
                     key="mode",
-                    value_type=types.LabelDescriptor.ValueType.STRING,
+                    value_type=api_metric.LabelDescriptor.ValueType.STRING,
                     description="Processing mode (PERFORMANCE or ECO)"
                 ))
                 
@@ -238,7 +238,7 @@ class CarbonMonitor:
         try:
             project_name = f"projects/{self.project_id}"
             
-            series = types.TimeSeries()
+            series = monitoring_v3.TimeSeries()
             series.metric.type = metric_type
             series.metric.labels["service"] = self.service_name
             series.metric.labels["mode"] = self.mode
@@ -252,7 +252,7 @@ class CarbonMonitor:
             seconds = int(now)
             nanos = int((now - seconds) * 10**9)
             
-            interval = types.TimeInterval({
+            interval = monitoring_v3.TimeInterval({
                 "end_time": {"seconds": seconds, "nanos": nanos}
             })
             
@@ -262,21 +262,35 @@ class CarbonMonitor:
             else:
                 point_value = {"double_value": float(value)}
             
-            point = types.Point({
+            point = monitoring_v3.Point({
                 "interval": interval,
                 "value": point_value
             })
             
             series.points = [point]
             
-            self._monitoring_client.create_time_series(
-                name=project_name,
-                time_series=[series],
-                timeout=10.0  # 10 second timeout to prevent 504 errors
-            )
+            # Try to write with retries
+            max_retries = 2
+            for attempt in range(max_retries + 1):
+                try:
+                    self._monitoring_client.create_time_series(
+                        name=project_name,
+                        time_series=[series],
+                        timeout=5.0  # Shorter timeout for faster failures
+                    )
+                    break  # Success
+                except Exception as retry_err:
+                    if attempt < max_retries and "504" in str(retry_err):
+                        # Retry on 504 errors
+                        continue
+                    else:
+                        # Give up after retries
+                        raise retry_err
             
         except Exception as e:
-            print(f"[CarbonMonitor] Failed to write metric {metric_type}: {e}")
+            # Silently skip 504 errors to avoid log spam
+            if "504" not in str(e):
+                print(f"[CarbonMonitor] Failed to write metric {metric_type}: {e}")
     
     @contextmanager
     def track_inference(self, batch_size: int = 1):
