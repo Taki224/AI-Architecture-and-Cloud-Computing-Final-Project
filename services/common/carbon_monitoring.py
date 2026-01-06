@@ -19,6 +19,7 @@ from codecarbon import EmissionsTracker
 
 # GCP Cloud Monitoring
 from google.cloud import monitoring_v3
+from google.cloud.monitoring_v3 import types
 
 
 class CarbonMonitor:
@@ -124,23 +125,23 @@ class CarbonMonitor:
         
         for desc_config in descriptors:
             try:
-                descriptor = monitoring_v3.MetricDescriptor()
+                descriptor = types.MetricDescriptor()
                 descriptor.type = desc_config["type"]
-                descriptor.metric_kind = monitoring_v3.MetricDescriptor.MetricKind.GAUGE
-                descriptor.value_type = monitoring_v3.MetricDescriptor.ValueType.DOUBLE if "emissions" in desc_config["type"] else monitoring_v3.MetricDescriptor.ValueType.INT64
+                descriptor.metric_kind = types.MetricDescriptor.MetricKind.GAUGE
+                descriptor.value_type = types.MetricDescriptor.ValueType.DOUBLE if "emissions" in desc_config["type"] else types.MetricDescriptor.ValueType.INT64
                 descriptor.description = desc_config["description"]
                 descriptor.display_name = desc_config["display_name"]
                 descriptor.unit = desc_config["unit"]
                 
                 # Add labels
-                descriptor.labels.append(monitoring_v3.LabelDescriptor(
+                descriptor.labels.append(types.LabelDescriptor(
                     key="service",
-                    value_type=monitoring_v3.LabelDescriptor.ValueType.STRING,
+                    value_type=types.LabelDescriptor.ValueType.STRING,
                     description="Service name (heavy-model or light-model)"
                 ))
-                descriptor.labels.append(monitoring_v3.LabelDescriptor(
+                descriptor.labels.append(types.LabelDescriptor(
                     key="mode",
-                    value_type=monitoring_v3.LabelDescriptor.ValueType.STRING,
+                    value_type=types.LabelDescriptor.ValueType.STRING,
                     description="Processing mode (PERFORMANCE or ECO)"
                 ))
                 
@@ -237,7 +238,7 @@ class CarbonMonitor:
         try:
             project_name = f"projects/{self.project_id}"
             
-            series = monitoring_v3.TimeSeries()
+            series = types.TimeSeries()
             series.metric.type = metric_type
             series.metric.labels["service"] = self.service_name
             series.metric.labels["mode"] = self.mode
@@ -251,7 +252,7 @@ class CarbonMonitor:
             seconds = int(now)
             nanos = int((now - seconds) * 10**9)
             
-            interval = monitoring_v3.TimeInterval({
+            interval = types.TimeInterval({
                 "end_time": {"seconds": seconds, "nanos": nanos}
             })
             
@@ -261,7 +262,7 @@ class CarbonMonitor:
             else:
                 point_value = {"double_value": float(value)}
             
-            point = monitoring_v3.Point({
+            point = types.Point({
                 "interval": interval,
                 "value": point_value
             })
