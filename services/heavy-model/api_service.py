@@ -63,6 +63,7 @@ shutdown_event = threading.Event()
 processing_queue = None  # Queue for sequential message processing
 worker_thread = None  # Single worker thread for processing
 batch_counter = 0  # Counter for batch IDs
+subscriber_lock = threading.Lock()  # Prevent concurrent subscriber initialization
 
 # Configuration from environment
 PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'local-project')
@@ -407,35 +408,36 @@ def start_subscriber():
     """Start the Pub/Sub subscriber with dedicated worker thread for sequential processing."""
     global subscriber, processing_queue, worker_thread
     
-    if subscriber is None:
-        print("✗ Subscriber not initialized")
-        return None
-    
-    print(f"\n[Subscriber] start_subscriber() called")
-    print(f"[Subscriber] Current worker_thread: {worker_thread}")
-    print(f"[Subscriber] Current processing_queue: {processing_queue}")
-    
-    # Initialize processing queue ONCE (if not already initialized)
-    if processing_queue is None:
-        import queue
-        processing_queue = queue.Queue()
-        print(f"[Subscriber] ✓ Initialized processing queue: {id(processing_queue)}")
-    else:
-        print(f"[Subscriber] ℹ Using existing queue: {id(processing_queue)}")
-    
-    # Start worker thread ONCE (if not already running)
-    if worker_thread is None or not worker_thread.is_alive():
-        import threading
-        worker_thread = threading.Thread(target=process_messages_worker, daemon=True, name="MessageWorker")
-        worker_thread.start()
-        print(f"[Subscriber] ✓ Started worker thread: {worker_thread.ident}")
-    else:
-        print(f"[Subscriber] ℹ Worker thread already running: {worker_thread.ident}")
-    
-    subscription_path = subscriber.subscription_path(PROJECT_ID, SENSOR_SUBSCRIPTION)
-    
-    print(f"[Subscriber] Listening on {subscription_path}...")
-    print(f"[Subscriber] Mode: Queue-based sequential processing\n")
+    with subscriber_lock:  # Prevent concurrent initialization
+        if subscriber is None:
+            print("✗ Subscriber not initialized")
+            return None
+        
+        print(f"\n[Subscriber] start_subscriber() called")
+        print(f"[Subscriber] Current worker_thread: {worker_thread}")
+        print(f"[Subscriber] Current processing_queue: {processing_queue}")
+        
+        # Initialize processing queue ONCE (if not already initialized)
+        if processing_queue is None:
+            import queue
+            processing_queue = queue.Queue()
+            print(f"[Subscriber] ✓ Initialized processing queue: {id(processing_queue)}")
+        else:
+            print(f"[Subscriber] ℹ Using existing queue: {id(processing_queue)}")
+        
+        # Start worker thread ONCE (if not already running)
+        if worker_thread is None or not worker_thread.is_alive():
+            import threading
+            worker_thread = threading.Thread(target=process_messages_worker, daemon=True, name="MessageWorker")
+            worker_thread.start()
+            print(f"[Subscriber] ✓ Started worker thread: {worker_thread.ident}")
+        else:
+            print(f"[Subscriber] ℹ Worker thread already running: {worker_thread.ident}")
+        
+        subscription_path = subscriber.subscription_path(PROJECT_ID, SENSOR_SUBSCRIPTION)
+        
+        print(f"[Subscriber] Listening on {subscription_path}...")
+        print(f"[Subscriber] Mode: Queue-based sequential processing\n")
     
     # Configure flow control - messages go to queue, worker processes sequentially
     flow_control = pubsub_v1.types.FlowControl(
@@ -555,8 +557,19 @@ def main():
                 # Wait for stream completion with 1-second timeout
                 streaming_future.result(timeout=1.0)
                 # If we get here, stream ended unexpectedly
-                print("⚠ Subscriber stream ended, restarting...")
-                streaming_future = start_subscriber()
+                print(f"⚠ [Main] Subscriber stream ended unexpectedly!")
+                print(f"⚠ [Main] Worker thread status: {worker_thread.ident if worker_thread else 'None'} alive={worker_thread.is_alive() if worker_thread else False}")
+                
+                # Only restart if worker thread actually died
+                if worker_thread is None or not worker_thread.is_alive():
+                    print("⚠ [Main] Worker thread died, restarting subscriber...")
+                    streaming_future = start_subscriber()
+                else:
+                    print("ℹ [Main] Worker thread still alive, NOT restarting")
+                    # Just restart the stream, not the worker
+                    subscription_path = subscriber.subscription_path(PROJECT_ID, SENSOR_SUBSCRIPTION)
+                    flow_control = pubsub_v1.types.FlowControl(max_messages=1, max_bytes=10 * 1024 * 1024)
+                    streaming_future = subscriber.subscribe(subscription_path, callback=message_callback, flow_control=flow_control)
             except FuturesTimeoutError:
                 # Normal - stream still running
                 continue
@@ -564,14 +577,24 @@ def main():
                 error_msg = str(e)
                 # Check for known timeout/session expiry errors
                 if "OutOfRange" in error_msg or "maximum allowed duration" in error_msg:
-                    print(f"⚠ Stream timeout (1h limit reached), restarting subscriber...")
+                    print(f"⚠ [Main] Stream timeout (1h limit), worker status: {worker_thread.ident if worker_thread else 'None'} alive={worker_thread.is_alive() if worker_thread else False}")
                     try:
                         streaming_future.cancel()
                     except:
                         pass
-                    streaming_future = start_subscriber()
+                    
+                    # Only restart if worker actually died
+                    if worker_thread is None or not worker_thread.is_alive():
+                        print("⚠ [Main] Worker died, restarting subscriber...")
+                        streaming_future = start_subscriber()
+                    else:
+                        print("ℹ [Main] Worker still alive, just restarting stream...")
+                        subscription_path = subscriber.subscription_path(PROJECT_ID, SENSOR_SUBSCRIPTION)
+                        flow_control = pubsub_v1.types.FlowControl(max_messages=1, max_bytes=10 * 1024 * 1024)
+                        streaming_future = subscriber.subscribe(subscription_path, callback=message_callback, flow_control=flow_control)
+                    
                     if streaming_future:
-                        print("✓ Subscriber restarted successfully")
+                        print("✓ Subscriber stream restarted successfully")
                         continue
                     else:
                         print("✗ Failed to restart subscriber")
