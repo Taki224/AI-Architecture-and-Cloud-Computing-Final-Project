@@ -27,16 +27,6 @@ def mock_monitoring_client():
         yield mock
 
 
-@pytest.fixture
-def mock_emissions_tracker():
-    """Mock CodeCarbon EmissionsTracker."""
-    with patch('carbon_monitoring.EmissionsTracker') as mock:
-        tracker_instance = MagicMock()
-        tracker_instance.stop.return_value = 0.001  # 0.001 kg = 1 gram CO2e
-        mock.return_value = tracker_instance
-        yield mock, tracker_instance
-
-
 class TestCarbonMonitorInitialization:
     """Test CarbonMonitor initialization."""
     
@@ -71,27 +61,22 @@ class TestCarbonMonitorInitialization:
 class TestCarbonTracking:
     """Test carbon emissions tracking."""
     
-    def test_track_inference_context_manager(self, mock_monitoring_client, mock_emissions_tracker):
-        """Test tracking inference using context manager."""
-        mock_tracker_class, mock_tracker_instance = mock_emissions_tracker
-        
+    def test_track_inference_context_manager(self, mock_monitoring_client):
+        """Test tracking inference using context manager (estimation-based)."""
         monitor = CarbonMonitor(
             project_id="test-project",
             service_name="heavy-model",
             mode="PERFORMANCE"
         )
         
-        # Track a batch of 10 inferences
+        # Track a batch of 10 inferences (uses estimation by default)
         with monitor.track_inference(batch_size=10):
             pass  # Simulate inference
         
-        # Check tracker was started and stopped
-        mock_tracker_instance.start.assert_called_once()
-        mock_tracker_instance.stop.assert_called_once()
-        
-        # Check emissions were recorded
+        # Check emissions were recorded (estimation-based: 0.000000005 kg per inference)
         assert monitor.total_inferences == 10
-        assert monitor.total_emissions_kg == 0.001  # 1 gram
+        assert monitor.total_emissions_kg > 0  # Should have some emissions recorded
+        assert monitor.total_emissions_kg == 10 * 0.000000005  # Exact estimation
     
     def test_record_emissions_manually(self, mock_monitoring_client):
         """Test manually recording emissions."""
@@ -113,10 +98,8 @@ class TestCarbonTracking:
         assert abs(monitor.total_emissions_kg - 0.0008) < 0.0001
         assert monitor.total_inferences == 6
     
-    def test_track_multiple_batches(self, mock_monitoring_client, mock_emissions_tracker):
+    def test_track_multiple_batches(self, mock_monitoring_client):
         """Test tracking multiple batches."""
-        mock_tracker_class, mock_tracker_instance = mock_emissions_tracker
-        
         monitor = CarbonMonitor(
             project_id="test-project",
             service_name="heavy-model",
@@ -129,7 +112,7 @@ class TestCarbonTracking:
                 pass
         
         assert monitor.total_inferences == 30
-        assert monitor.total_emissions_kg == 0.003  # 3 grams
+        assert monitor.total_emissions_kg == 30 * 0.000000005  # Estimation-based
 
 
 class TestMetricsExport:
