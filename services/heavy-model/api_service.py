@@ -359,8 +359,15 @@ def message_callback(message):
         
         # Process through heavy model - use perf_counter for accurate timing
         start_time = time.perf_counter()
+        
+        with log_lock:
+            print(f"[Batch #{batch_id}] Starting processing...")
+        
         results = process_batch(data)
         processing_time_ms = (time.perf_counter() - start_time) * 1000
+        
+        with log_lock:
+            print(f"[Batch #{batch_id}] Processing complete, publishing...")
         
         # Publish results
         publish_success = publish_results(results)
@@ -395,7 +402,7 @@ def start_subscriber():
     
     # Configure flow control and timeout settings
     flow_control = pubsub_v1.types.FlowControl(
-        max_messages=100,  # Process up to 100 messages concurrently
+        max_messages=10,  # Process up to 10 messages concurrently (reduced to prevent CPU contention)
         max_bytes=10 * 1024 * 1024,  # 10 MB
     )
     
