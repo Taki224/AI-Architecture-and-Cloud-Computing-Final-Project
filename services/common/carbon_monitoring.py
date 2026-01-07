@@ -1,11 +1,12 @@
 """
 Carbon Emissions Monitoring for Anomaly Detection Services
-Uses CodeCarbon to measure gCO₂e emissions and exports to GCP Cloud Monitoring
+Tracks gCO₂e emissions and exports to GCP Cloud Monitoring
 
 This module provides:
-- Per-batch/per-request carbon emission tracking
+- Per-batch/per-request carbon emission tracking (estimation-based for cloud reliability)
 - Custom metrics export to Cloud Monitoring with service/mode labels
 - Total and per-inference emissions tracking
+- Optional CodeCarbon integration (set CODECARBON_ENABLED=true to enable)
 """
 import os
 import time
@@ -13,9 +14,6 @@ import threading
 from datetime import datetime
 from typing import Optional
 from contextlib import contextmanager
-
-# CodeCarbon for emissions tracking
-from codecarbon import EmissionsTracker
 
 # GCP Cloud Monitoring
 from google.cloud import monitoring_v3
@@ -301,29 +299,31 @@ class CarbonMonitor:
             batch_size: Number of samples in this inference batch
             
         Yields:
-            EmissionsTracker instance (can be ignored)
+            None (CodeCarbon disabled for cloud - uses estimation)
         """
-        # Set country code via environment variable for CodeCarbon
-        os.environ['CODECARBON_COUNTRY_ISO_CODE'] = self.country_iso_code
+        # CodeCarbon's EmissionsTracker blocks on concurrent/repeated calls in cloud environments.
+        # Use estimation-based approach instead for reliability.
+        # Set CODECARBON_ENABLED=true to enable actual tracking (not recommended for production)
+        use_codecarbon = os.getenv('CODECARBON_ENABLED', 'false').lower() == 'true'
         
-        # Create a temporary tracker for this inference
-        # Use machine tracking mode with TDP fallback for cloud environments
         tracker = None
-        try:
-            tracker = EmissionsTracker(
-                project_name=f"{self.service_name}-inference",
-                measure_power_secs=1,  # Less frequent measurements
-                save_to_file=False,
-                save_to_api=False,
-                save_to_logger=False,
-                log_level="error",  # Suppress verbose output
-                tracking_mode="machine",  # Machine mode works better on cloud
-                allow_multiple_runs=True,  # Allow concurrent tracking
-            )
-            tracker.start()
-        except Exception as e:
-            # CodeCarbon can fail on cloud environments - use fallback
-            tracker = None
+        if use_codecarbon:
+            os.environ['CODECARBON_COUNTRY_ISO_CODE'] = self.country_iso_code
+            try:
+                from codecarbon import EmissionsTracker
+                tracker = EmissionsTracker(
+                    project_name=f"{self.service_name}-inference",
+                    measure_power_secs=1,
+                    save_to_file=False,
+                    save_to_api=False,
+                    save_to_logger=False,
+                    log_level="error",
+                    tracking_mode="machine",
+                    allow_multiple_runs=True,
+                )
+                tracker.start()
+            except Exception:
+                tracker = None
         
         try:
             yield tracker
@@ -334,17 +334,13 @@ class CarbonMonitor:
                 try:
                     emissions_kg = tracker.stop() or 0.0
                 except Exception:
-                    # Tracker failed - use fallback
                     emissions_kg = 0.0
             
-            # If tracker failed or returned 0, use fallback estimation
-            # Based on typical cloud vCPU: ~15W TDP, ~0.1 kgCO2e/kWh (Finland grid - europe-north1)
-            # For 10 inferences taking ~0.1 seconds total:
-            # Power: 15W * 0.1s = 1.5 Wh = 0.0015 kWh
-            # Emissions: 0.0015 kWh * 0.1 kgCO2e/kWh = 0.00000015 kgCO2e per batch
+            # Use estimation-based calculation (more reliable in cloud environments)
+            # Based on typical cloud vCPU: ~15W TDP, ~0.1 kgCO2e/kWh (low-carbon grid)
+            # Estimate: ~0.000005 gCO2e per inference
             if emissions_kg == 0 or emissions_kg is None:
-                # Estimate: ~0.000005 gCO2e per inference (Finland low-carbon grid)
-                emissions_kg = 0.000000005 * batch_size  # 0.005 mg CO2e per inference
+                emissions_kg = 0.000000005 * batch_size
             
             # Update totals
             with self._lock:
@@ -352,36 +348,27 @@ class CarbonMonitor:
                 self.total_inferences += batch_size
                 self._pending_emissions_kg += emissions_kg
                 self._pending_inferences += batch_size
-            
-            # Batch logging removed - will be aggregated in periodic reports
     
     def track_single_inference(self) -> float:
         """
-        Track a single inference and return emissions in grams CO₂e.
+        Track a single inference and return estimated emissions in grams CO₂e.
         
         This is a simpler alternative to the context manager for single predictions.
-        Note: For very fast inferences, emissions may be negligible or zero.
+        Uses estimation-based calculation for cloud reliability.
         
         Returns:
-            Emissions in grams CO₂e (may be 0 for very fast operations)
+            Emissions in grams CO₂e (estimated)
         """
-        # Set country code via environment variable for CodeCarbon
-        os.environ['CODECARBON_COUNTRY_ISO_CODE'] = self.country_iso_code
+        # Use estimation-based approach for reliability
+        emissions_kg = 0.000000005  # ~0.005 mg CO2e per inference
         
-        tracker = EmissionsTracker(
-            project_name=f"{self.service_name}-single",
-            measure_power_secs=0.1,
-            save_to_file=False,
-            save_to_api=False,
-            save_to_logger=False,
-            log_level="error",
-            tracking_mode="process"
-        )
+        with self._lock:
+            self.total_emissions_kg += emissions_kg
+            self.total_inferences += 1
+            self._pending_emissions_kg += emissions_kg
+            self._pending_inferences += 1
         
-        tracker.start()
-        # Caller should do inference between start/stop
-        # This method is meant to be called as a wrapper
-        return tracker
+        return emissions_kg * 1000  # Return in grams
     
     def record_emissions(self, emissions_kg: float, batch_size: int = 1):
         """

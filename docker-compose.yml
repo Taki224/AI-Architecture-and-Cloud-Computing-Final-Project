@@ -14,6 +14,7 @@ services:
       - PORT=5001
       - GOOGLE_CLOUD_PROJECT=project-bf5303f9-c6e6-4630-a08
       - GOOGLE_APPLICATION_CREDENTIALS=/app/gcp-credentials.json
+      - CODECARBON_ENABLED=true
     ports:
       - "5001:5000"
     volumes:

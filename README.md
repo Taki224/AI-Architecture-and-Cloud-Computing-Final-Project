@@ -57,15 +57,34 @@ Note: Carbon measurement is for **observability only**—the system does not aut
 
 #### Cloud Environment Carbon Estimation
 
-When running on **GCP Cloud Run**, hardware power monitoring sensors are not accessible to containers. CodeCarbon cannot directly measure CPU/GPU power consumption in serverless environments. To provide meaningful carbon metrics, the system uses a **fallback estimation** based on typical cloud infrastructure:
+When running on **GCP Cloud Run** or other containerized cloud environments, hardware power monitoring sensors are not accessible to application code. CodeCarbon relies on direct access to CPU/GPU power sensors (via tools like `powercap`, RAPL, or NVML), which are typically unavailable in:
+- Containerized environments (Docker, Kubernetes)
+- Serverless platforms (Cloud Run, Lambda, Cloud Functions)
+- Virtual machines without privileged access
 
-| Parameter | Value | Source |
-|-----------|-------|--------|
-| vCPU Power (TDP) | ~15W | Typical cloud vCPU allocation |
-| Grid Carbon Intensity | ~0.1 kgCO₂e/kWh | Finland average (europe-north1 region) |
-| Estimated per-inference | ~0.005 mg CO₂e | Conservative cloud estimate |
+Additionally, CodeCarbon's blocking I/O operations when attempting to read unavailable hardware sensors can cause concurrent requests to hang in multi-threaded environments.
 
-Finland's grid has one of the lowest carbon intensities in Europe due to high nuclear and renewable energy usage. This estimation ensures the carbon dashboard displays realistic, non-zero values for cloud workloads while clearly indicating these are estimates rather than direct measurements. Local Docker deployments with hardware access will use actual CodeCarbon measurements when available.
+To ensure **reliability and observability**, the system uses **estimation-based carbon tracking** (disabled CodeCarbon by default in cloud):
+
+**Estimation Methodology:**
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| vCPU Power (TDP) | ~15W | Typical cloud instance vCPU allocation (Intel/AMD server processors) |
+| Grid Carbon Intensity | ~0.1 kgCO₂e/kWh | Finland average (europe-north1 region - low carbon grid) |
+| Inference Time | ~0.1s | Conservative estimate for ensemble ML prediction |
+| **Per-inference emission** | **~0.005 mg CO₂e** | 15W × 0.1s = 1.5 Wh → 0.0000015 kWh × 0.1 = 0.00000015 kg |
+
+**Why Finland's Grid?**
+Finland (europe-north1) has one of the lowest carbon intensities in Europe (~100 gCO₂e/kWh) due to:
+- 40% nuclear energy (low-carbon baseload)
+- 40% renewable energy (hydro, wind, biomass)
+- 20% fossil fuels
+
+This estimation ensures the carbon dashboard displays realistic, non-zero values for cloud workloads while clearly indicating these are **estimates** rather than direct measurements.
+
+**Enabling Real Measurements (Not Recommended):**
+Set `CODECARBON_ENABLED=true` environment variable to enable actual CodeCarbon tracking. This may cause performance issues or hangs in cloud environments and is only suitable for local development with hardware access.
 
 ---
 
