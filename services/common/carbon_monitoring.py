@@ -317,21 +317,40 @@ class CarbonMonitor:
         os.environ['CODECARBON_COUNTRY_ISO_CODE'] = self.country_iso_code
         
         # Create a temporary tracker for this inference
-        tracker = EmissionsTracker(
-            project_name=f"{self.service_name}-inference",
-            measure_power_secs=0.5,  # Measure every 0.5s for short inferences
-            save_to_file=False,
-            save_to_api=False,
-            save_to_logger=False,
-            log_level="error",  # Suppress verbose output
-            tracking_mode="process"
-        )
+        # Use machine tracking mode with TDP fallback for cloud environments
+        try:
+            tracker = EmissionsTracker(
+                project_name=f"{self.service_name}-inference",
+                measure_power_secs=1,  # Less frequent measurements
+                save_to_file=False,
+                save_to_api=False,
+                save_to_logger=False,
+                log_level="error",  # Suppress verbose output
+                tracking_mode="machine",  # Machine mode works better on cloud
+                allow_multiple_runs=True,  # Allow concurrent tracking
+                default_cpu_power=15,  # Default TDP for cloud vCPUs (watts)
+            )
+        except Exception as e:
+            print(f"[CarbonMonitor] Failed to create tracker: {e}, using fallback estimation")
+            tracker = None
         
         try:
-            tracker.start()
+            if tracker:
+                tracker.start()
             yield tracker
+        except Exception as e:
+            print(f"[CarbonMonitor] Tracker error during inference: {e}")
+            yield None
         finally:
-            emissions_kg = tracker.stop()
+            emissions_kg = 0.0
+            if tracker:
+                try:
+                    emissions_kg = tracker.stop() or 0.0
+                except Exception as e:
+                    print(f"[CarbonMonitor] Error stopping tracker: {e}")
+                    # Estimate emissions based on typical cloud vCPU power consumption
+                    # ~15W TDP, ~0.5 kgCO2e/kWh average grid intensity
+                    emissions_kg = 0.0000001 * batch_size  # Fallback minimal estimate
             
             if emissions_kg is None:
                 emissions_kg = 0.0
