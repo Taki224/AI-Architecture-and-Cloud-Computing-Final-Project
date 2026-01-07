@@ -82,3 +82,4 @@ jobs:
             --set-env-vars=PUBSUB_ANOMALY_TOPIC=anomaly-results
             --memory=512Mi
             --cpu=1
+            --min-instances=1

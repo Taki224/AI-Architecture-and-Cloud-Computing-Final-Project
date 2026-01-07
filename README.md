@@ -216,7 +216,7 @@ flowchart TB
 
     subgraph GCP["GCP Production"]
         PubSub["Cloud Pub/Sub"]
-        CloudRun["Cloud Run<br/>heavy-model-service<br/>Auto-scale 0-10"]
+        CloudRun["Cloud Run<br/>heavy-model-service<br/>Auto-scale 1-10"]
         Logging["Cloud Logging"]
         Monitoring["Cloud Monitoring"]
     end
@@ -238,7 +238,7 @@ Network: `carbon-aware-network`
 **Note:** Only the light-model-service runs locally via Docker Compose. The heavy-model-service and Pub/Sub run in GCP (see [docs/GCP_SETUP.md](docs/GCP_SETUP.md)).
 
 #### Production GCP Environment
-- **Cloud Run**: Auto-scaling 0-10 instances, 512MB memory
+- **Cloud Run**: Auto-scaling 1-10 instances (min 1 for Pub/Sub pull), 512MB memory
 - **Cloud Pub/Sub**: Managed broker (99.9% SLA)
 - **Artifact Registry**: Docker image storage
 - **Cloud Logging**: Structured JSON logs
