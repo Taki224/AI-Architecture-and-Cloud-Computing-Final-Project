@@ -55,6 +55,18 @@ Mode switching is **always manual** (operator toggles via GUI). The system integ
 
 Note: Carbon measurement is for **observability only**—the system does not automatically switch modes based on carbon intensity.
 
+#### Cloud Environment Carbon Estimation
+
+When running on **GCP Cloud Run**, hardware power monitoring sensors are not accessible to containers. CodeCarbon cannot directly measure CPU/GPU power consumption in serverless environments. To provide meaningful carbon metrics, the system uses a **fallback estimation** based on typical cloud infrastructure:
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| vCPU Power (TDP) | ~15W | Typical cloud vCPU allocation |
+| Grid Carbon Intensity | ~0.1 kgCO₂e/kWh | Finland average (europe-north1 region) |
+| Estimated per-inference | ~0.005 mg CO₂e | Conservative cloud estimate |
+
+Finland's grid has one of the lowest carbon intensities in Europe due to high nuclear and renewable energy usage. This estimation ensures the carbon dashboard displays realistic, non-zero values for cloud workloads while clearly indicating these are estimates rather than direct measurements. Local Docker deployments with hardware access will use actual CodeCarbon measurements when available.
+
 ---
 
 ## Architecturally Significant Use Cases

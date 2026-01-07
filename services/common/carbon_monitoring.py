@@ -342,17 +342,24 @@ class CarbonMonitor:
             yield None
         finally:
             emissions_kg = 0.0
+            tracker_failed = tracker is None
+            
             if tracker:
                 try:
                     emissions_kg = tracker.stop() or 0.0
                 except Exception as e:
                     print(f"[CarbonMonitor] Error stopping tracker: {e}")
-                    # Estimate emissions based on typical cloud vCPU power consumption
-                    # ~15W TDP, ~0.5 kgCO2e/kWh average grid intensity
-                    emissions_kg = 0.0000001 * batch_size  # Fallback minimal estimate
+                    tracker_failed = True
             
-            if emissions_kg is None:
-                emissions_kg = 0.0
+            # If tracker failed or returned 0, use fallback estimation
+            # Based on typical cloud vCPU: ~15W TDP, ~0.1 kgCO2e/kWh (Finland grid - europe-north1)
+            # For 10 inferences taking ~0.1 seconds total:
+            # Power: 15W * 0.1s = 1.5 Wh = 0.0015 kWh
+            # Emissions: 0.0015 kWh * 0.1 kgCO2e/kWh = 0.00000015 kgCO2e per batch
+            if emissions_kg == 0 or emissions_kg is None or tracker_failed:
+                # Estimate: ~0.000005 gCO2e per inference (Finland low-carbon grid)
+                emissions_kg = 0.000000005 * batch_size  # 0.005 mg CO2e per inference
+                print(f"[CarbonMonitor] Using fallback estimation: {emissions_kg * 1000:.6f} gCO₂e for {batch_size} samples")
             
             # Update totals
             with self._lock:

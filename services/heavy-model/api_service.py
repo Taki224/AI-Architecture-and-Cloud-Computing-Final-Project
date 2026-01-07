@@ -21,6 +21,7 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 # Suppress sklearn warnings to reduce log noise
 warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
 warnings.filterwarnings('ignore', message='.*InconsistentVersionWarning.*')
+warnings.filterwarnings('ignore', message='.*sklearn.utils.parallel.*')
 
 from flask import Flask, jsonify
 import numpy as np
