@@ -161,8 +161,10 @@ class AnomalyMonitor:
         # Ensure minimum interval between writes to avoid "out of order" errors
         now = time.time()
         with self._lock:
-            if now - self._last_metric_write_time < self.MIN_METRIC_INTERVAL_SECONDS:
+            time_since_last = now - self._last_metric_write_time
+            if time_since_last < self.MIN_METRIC_INTERVAL_SECONDS:
                 # Skip this write - too soon after the last one
+                print(f"[Monitor] Skipping write - only {time_since_last:.1f}s since last write (need {self.MIN_METRIC_INTERVAL_SECONDS}s)")
                 return
             self._last_metric_write_time = now
         
