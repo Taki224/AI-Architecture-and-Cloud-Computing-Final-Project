@@ -25,6 +25,7 @@ warnings.filterwarnings('ignore', message='.*sklearn.utils.parallel.*')
 
 from flask import Flask, jsonify
 import numpy as np
+from google.cloud import pubsub_v1
 
 # Add parent directory for shared model code
 sys.path.insert(0, '/app/models')
@@ -212,13 +213,14 @@ def process_batch(message_data: dict) -> dict:
     stats = detector.get_stats()
     carbon_stats = carbon_monitor.get_stats() if carbon_monitor else {}
     
-    if anomaly_count > 0:
-        print(f"\n📊 Batch Summary: {anomaly_count}/{len(readings)} anomalies detected "
-              f"({anomaly_count/len(readings)*100:.1f}%) | ML fitted: {stats.get('ml_fitted', False)}")
+    print(f"[Processing] Completed {len(readings)} readings | "
+          f"Anomalies: {anomaly_count} ({anomaly_count/len(readings)*100:.1f}%) | "
+          f"ML fitted: {stats.get('ml_fitted', False)} | "
+          f"Method: {results[0].get('method', 'unknown') if results else 'unknown'}")
     
-    if carbon_stats:
-        print(f"🌱 Carbon: {carbon_stats.get('total_emissions_gco2e', 0):.6f} gCO₂e total | "
-              f"{carbon_stats.get('avg_emissions_per_inference_gco2e', 0):.6f} gCO₂e/inference\n")
+    if carbon_stats and carbon_stats.get('total_emissions_gco2e', 0) > 0:
+        print(f"[Carbon] {carbon_stats.get('total_emissions_gco2e', 0):.6f} gCO₂e | "
+              f"{carbon_stats.get('avg_emissions_per_inference_gco2e', 0):.6f} gCO₂e/inference")
     
     return {
         'device_id': device_id,
@@ -235,6 +237,7 @@ def _process_readings_batch(readings, device_id, detector, monitor):
     """Process readings batch - extracted for carbon tracking."""
     results = []
     anomaly_count = 0
+    anomaly_details = []
     
     for reading in readings:
         timestamp = reading.get('timestamp', datetime.utcnow().timestamp())
@@ -265,8 +268,7 @@ def _process_readings_batch(readings, device_id, detector, monitor):
             
             if is_anomaly:
                 anomaly_count += 1
-                print(f"🚨 ANOMALY | Device: {device_id} | Value: {vibration:7.4f} | "
-                      f"Method: {method} | Score: {anomaly_score:.4f} | Z: {z_score:.2f}")
+                anomaly_details.append(f"v={vibration:.4f},score={anomaly_score:.3f}")
                 
                 # Log to Cloud Monitoring
                 if monitor:
@@ -276,8 +278,6 @@ def _process_readings_batch(readings, device_id, detector, monitor):
                         confidence=confidence,
                         device_id=device_id
                     )
-            else:
-                print(f"✓ Normal  | Device: {device_id} | Value: {vibration:7.4f} | Z: {z_score:.2f}")
             
         except Exception as e:
             print(f"✗ Error processing reading: {e}")
@@ -288,6 +288,10 @@ def _process_readings_batch(readings, device_id, detector, monitor):
                 'confidence': 0.0,
                 'error': str(e)
             })
+    
+    # Log anomaly summary if any found
+    if anomaly_count > 0:
+        print(f"🚨 {anomaly_count} ANOMALIES detected: [{', '.join(anomaly_details[:5])}{'...' if len(anomaly_details) > 5 else ''}]")
     
     return results, anomaly_count
 
@@ -308,15 +312,19 @@ def publish_results(results: dict):
     try:
         topic_path = publisher.topic_path(PROJECT_ID, ANOMALY_TOPIC)
         data = json.dumps(results).encode('utf-8')
+        data_size_kb = len(data) / 1024
         
         future = publisher.publish(topic_path, data)
         message_id = future.result(timeout=10)
         
-        print(f"[Publisher] Results sent (msg_id: {message_id})")
+        print(f"[Publisher] ✓ Published to {ANOMALY_TOPIC} | "
+              f"msg_id: {message_id[:8]}... | "
+              f"size: {data_size_kb:.2f} KB | "
+              f"device: {results.get('device_id', 'unknown')}")
         return True
         
     except Exception as e:
-        print(f"✗ Failed to publish results: {e}")
+        print(f"✗ [Publisher] Failed to publish: {e}")
         return False
 
 
@@ -334,10 +342,14 @@ def message_callback(message):
         device_id = data.get('device_id', 'unknown')
         reading_count = data.get('count', len(data.get('readings', [])))
         
-        print(f"\n[Subscriber] Received batch: {reading_count} readings from {device_id}")
+        print(f"\n[Subscriber] ← Received batch: {reading_count} readings from {device_id}")
         
         # Process through heavy model
+        start_time = datetime.utcnow()
         results = process_batch(data)
+        processing_time_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
+        
+        print(f"[Timing] Processing took {processing_time_ms:.1f} ms ({processing_time_ms/reading_count:.1f} ms/reading)")
         
         # Publish results
         publish_success = publish_results(results)
@@ -345,7 +357,7 @@ def message_callback(message):
         # Only acknowledge after successful processing and publishing
         if publish_success or results.get('error'):
             message.ack()
-            print(f"[Subscriber] Message acknowledged")
+            print(f"[Subscriber] ✓ Message acknowledged\n")
         else:
             # Don't ack - will be redelivered
             print(f"[Subscriber] Message NOT acknowledged - will retry")
@@ -361,7 +373,7 @@ def message_callback(message):
 
 
 def start_subscriber():
-    """Start the Pub/Sub subscriber in a background thread."""
+    """Start the Pub/Sub subscriber with automatic stream restart on timeout."""
     global subscriber
     
     if subscriber is None:
@@ -372,9 +384,16 @@ def start_subscriber():
     
     print(f"\n[Subscriber] Listening on {subscription_path}...")
     
+    # Configure flow control and timeout settings
+    flow_control = pubsub_v1.types.FlowControl(
+        max_messages=100,  # Process up to 100 messages concurrently
+        max_bytes=10 * 1024 * 1024,  # 10 MB
+    )
+    
     streaming_pull_future = subscriber.subscribe(
         subscription_path,
-        callback=message_callback
+        callback=message_callback,
+        flow_control=flow_control
     )
     
     return streaming_pull_future
@@ -476,19 +495,43 @@ def main():
     print("Service ready - waiting for sensor data...")
     print("=" * 70 + "\n")
     
-    # Block until shutdown
+    # Block until shutdown with automatic stream restart
     try:
         while not shutdown_event.is_set():
             try:
+                # Wait for stream completion with 1-second timeout
                 streaming_future.result(timeout=1.0)
+                # If we get here, stream ended unexpectedly
+                print("⚠ Subscriber stream ended, restarting...")
+                streaming_future = start_subscriber()
             except FuturesTimeoutError:
+                # Normal - stream still running
                 continue
             except Exception as e:
-                print(f"✗ Subscriber error: {e}")
-                break
+                error_msg = str(e)
+                # Check for known timeout/session expiry errors
+                if "OutOfRange" in error_msg or "maximum allowed duration" in error_msg:
+                    print(f"⚠ Stream timeout (1h limit reached), restarting subscriber...")
+                    try:
+                        streaming_future.cancel()
+                    except:
+                        pass
+                    streaming_future = start_subscriber()
+                    if streaming_future:
+                        print("✓ Subscriber restarted successfully")
+                        continue
+                    else:
+                        print("✗ Failed to restart subscriber")
+                        break
+                else:
+                    print(f"✗ Subscriber error: {e}")
+                    break
     finally:
         print("\n[Service] Shutting down...")
-        streaming_future.cancel()
+        try:
+            streaming_future.cancel()
+        except:
+            pass
         
         if monitor:
             monitor.flush()
