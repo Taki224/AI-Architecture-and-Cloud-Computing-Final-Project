@@ -80,8 +80,8 @@ jobs:
             --set-env-vars=PUBSUB_SENSOR_TOPIC=sensor-data
             --set-env-vars=PUBSUB_SENSOR_SUBSCRIPTION=sensor-data-sub
             --set-env-vars=PUBSUB_ANOMALY_TOPIC=anomaly-results
-            --memory=512Mi
-            --cpu=1
+            --memory=2Gi
+            --cpu=2
             --min-instances=1
             --max-instances=1
             --concurrency=1
