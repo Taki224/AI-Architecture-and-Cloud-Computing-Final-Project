@@ -317,6 +317,7 @@ def message_callback(message):
     """
     Callback for processing incoming Pub/Sub messages.
     Processes one batch at a time, fully sequential using a global lock.
+    ACKs only after complete processing to prevent concurrent batches.
     
     Args:
         message: Pub/Sub message object
@@ -326,9 +327,6 @@ def message_callback(message):
     # Acquire lock to ensure only one batch processes at a time
     with batch_processing_lock:
         try:
-            # Acknowledge immediately to prevent redelivery
-            message.ack()
-            
             # Decode message
             data = json.loads(message.data.decode('utf-8'))
             
@@ -358,6 +356,9 @@ def message_callback(message):
             print(f"  Anomalies: {results.get('anomalies_detected', 0)}/{reading_count}")
             print(f"  Published: {'✓' if publish_success else '✗'}")
             print(f"{'='*60}\n")
+            
+            # Acknowledge AFTER processing completes - prevents next batch from starting
+            message.ack()
                 
         except json.JSONDecodeError as e:
             print(f"✗ Invalid JSON in message: {e}")
@@ -367,7 +368,8 @@ def message_callback(message):
             print(f"✗ Error processing message: {e}")
             import traceback
             traceback.print_exc()
-            # Still ack to prevent infinite retry - message will be lost but won't block
+            # Ack even on error to prevent infinite retry and blocking
+            message.ack()
 
 
 def start_subscriber():
