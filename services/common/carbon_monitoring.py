@@ -75,6 +75,10 @@ class CarbonMonitor:
         self._pending_emissions_kg = 0.0
         self._pending_inferences = 0
         
+        # Track last metric write timestamps per metric type to avoid "out of order" errors
+        self._last_metric_write_times = {}
+        self._min_metric_interval = 10  # seconds
+        
         # Initialize Cloud Monitoring client
         self._monitoring_client = None
         self._init_monitoring()
@@ -230,6 +234,14 @@ class CarbonMonitor:
         if not self._monitoring_client:
             return
         
+        # Ensure minimum interval between writes for the same metric type
+        now = time.time()
+        with self._lock:
+            last_write = self._last_metric_write_times.get(metric_type, 0)
+            if now - last_write < self._min_metric_interval:
+                return  # Skip - too soon since last write
+            self._last_metric_write_times[metric_type] = now
+        
         try:
             project_name = f"projects/{self.project_id}"
             
@@ -243,7 +255,6 @@ class CarbonMonitor:
             series.resource.labels["project_id"] = self.project_id
             
             # Set timestamp
-            now = time.time()
             seconds = int(now)
             nanos = int((now - seconds) * 10**9)
             
@@ -264,26 +275,18 @@ class CarbonMonitor:
             
             series.points = [point]
             
-            # Try to write with retries
-            max_retries = 2
-            for attempt in range(max_retries + 1):
-                try:
-                    self._monitoring_client.create_time_series(
-                        name=project_name,
-                        time_series=[series],
-                        timeout=5.0  # Shorter timeout for faster failures
-                    )
-                    break  # Success
-                except Exception as retry_err:
-                    if attempt < max_retries and "504" in str(retry_err):
-                        continue
-                    else:
-                        # Give up after retries
-                        raise retry_err
+            self._monitoring_client.create_time_series(
+                name=project_name,
+                time_series=[series],
+                timeout=5.0  # Shorter timeout for faster failures
+            )
             
         except Exception as e:
-            # Silently ignore metric write failures - they're not critical
-            pass
+            # Log but don't fail - metrics are not critical
+            if "504" in str(e):
+                print(f"[Carbon] Metric write timeout (504) - skipping")
+            elif "must be written in order" not in str(e).lower():
+                print(f"[Carbon] Metric write failed: {e}")
     
     @contextmanager
     def track_inference(self, batch_size: int = 1):
@@ -305,6 +308,7 @@ class CarbonMonitor:
         
         # Create a temporary tracker for this inference
         # Use machine tracking mode with TDP fallback for cloud environments
+        tracker = None
         try:
             tracker = EmissionsTracker(
                 project_name=f"{self.service_name}-inference",
@@ -316,34 +320,29 @@ class CarbonMonitor:
                 tracking_mode="machine",  # Machine mode works better on cloud
                 allow_multiple_runs=True,  # Allow concurrent tracking
             )
+            tracker.start()
         except Exception as e:
-            print(f"[CarbonMonitor] Failed to create tracker: {e}, using fallback estimation")
+            # CodeCarbon can fail on cloud environments - use fallback
             tracker = None
         
         try:
-            if tracker:
-                tracker.start()
             yield tracker
-        except Exception as e:
-            print(f"[CarbonMonitor] Tracker error during inference: {e}")
-            yield None
         finally:
             emissions_kg = 0.0
-            tracker_failed = tracker is None
             
             if tracker:
                 try:
                     emissions_kg = tracker.stop() or 0.0
-                except Exception as e:
-                    print(f"[CarbonMonitor] Error stopping tracker: {e}")
-                    tracker_failed = True
+                except Exception:
+                    # Tracker failed - use fallback
+                    emissions_kg = 0.0
             
             # If tracker failed or returned 0, use fallback estimation
             # Based on typical cloud vCPU: ~15W TDP, ~0.1 kgCO2e/kWh (Finland grid - europe-north1)
             # For 10 inferences taking ~0.1 seconds total:
             # Power: 15W * 0.1s = 1.5 Wh = 0.0015 kWh
             # Emissions: 0.0015 kWh * 0.1 kgCO2e/kWh = 0.00000015 kgCO2e per batch
-            if emissions_kg == 0 or emissions_kg is None or tracker_failed:
+            if emissions_kg == 0 or emissions_kg is None:
                 # Estimate: ~0.000005 gCO2e per inference (Finland low-carbon grid)
                 emissions_kg = 0.000000005 * batch_size  # 0.005 mg CO2e per inference
             
