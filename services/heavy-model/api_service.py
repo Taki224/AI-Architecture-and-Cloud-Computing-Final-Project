@@ -391,10 +391,15 @@ def start_subscriber():
         max_bytes=10 * 1024 * 1024,  # 10 MB
     )
     
+    # Use a single-threaded executor to ensure truly sequential processing
+    from concurrent.futures import ThreadPoolExecutor
+    executor = ThreadPoolExecutor(max_workers=1)
+    
     streaming_pull_future = subscriber.subscribe(
         subscription_path,
         callback=message_callback,
-        flow_control=flow_control
+        flow_control=flow_control,
+        scheduler=pubsub_v1.subscriber.scheduler.ThreadScheduler(executor=executor)
     )
     
     return streaming_pull_future
