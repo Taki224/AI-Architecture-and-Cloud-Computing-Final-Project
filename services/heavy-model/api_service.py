@@ -596,4 +596,7 @@ def main():
 
 
 if __name__ == '__main__':
+    # Prevent multiple instances from starting via environment variable
+    instance_id = os.getenv('INSTANCE_ID', str(os.getpid()))
+    print(f"[Startup] Process PID: {os.getpid()}, Instance ID: {instance_id}")
     main()
