@@ -60,8 +60,6 @@ subscriber = None
 monitor = None
 carbon_monitor = None
 shutdown_event = threading.Event()
-log_lock = threading.Lock()  # Thread lock for synchronized logging
-detector_lock = threading.Lock()  # Thread lock for detector access (not thread-safe)
 batch_counter = 0  # Counter for batch IDs
 
 # Configuration from environment
@@ -184,6 +182,7 @@ def init_carbon_monitoring():
 def process_batch(message_data: dict) -> dict:
     """
     Process a batch of sensor readings through the hybrid ML detector.
+    Processes readings one-by-one with logging after each.
     
     Args:
         message_data: Dict containing 'device_id' and 'readings' array
@@ -195,6 +194,7 @@ def process_batch(message_data: dict) -> dict:
     
     device_id = message_data.get('device_id', 'unknown')
     readings = message_data.get('readings', [])
+    batch_size = len(readings)
     
     if not readings:
         return {'device_id': device_id, 'readings': [], 'error': 'No readings provided'}
@@ -204,54 +204,17 @@ def process_batch(message_data: dict) -> dict:
     
     results = []
     anomaly_count = 0
-    batch_size = len(readings)
     
-    # Use carbon tracking context manager if available
-    if carbon_monitor:
-        with carbon_monitor.track_inference(batch_size=batch_size):
-            results, anomaly_count = _process_readings_batch(readings, device_id, detector, monitor)
-    else:
-        results, anomaly_count = _process_readings_batch(readings, device_id, detector, monitor)
-    
-    # Summary logging (only anomalies and carbon stats, rest is logged by message_callback)
-    stats = detector.get_stats()
-    carbon_stats = carbon_monitor.get_stats() if carbon_monitor else {}
-    
-    # Only log anomalies if any detected
-    if anomaly_count > 0:
-        with log_lock:
-            print(f"    🚨 {anomaly_count} anomalies detected in batch")
-    
-    # Only log carbon if we have meaningful data
-    if carbon_stats and carbon_stats.get('total_emissions_gco2e', 0) > 0:
-        pass  # Carbon is tracked internally, no need for verbose logging
-    
-    return {
-        'device_id': device_id,
-        'readings': results,
-        'count': len(results),
-        'anomalies_detected': anomaly_count,
-        'ml_fitted': stats.get('ml_fitted', False),
-        'carbon_emissions_gco2e': carbon_stats.get('total_emissions_gco2e', 0) if carbon_stats else None,
-        'processed_at': datetime.utcnow().isoformat()
-    }
-
-
-def _process_readings_batch(readings, device_id, detector, monitor):
-    """Process readings batch - extracted for carbon tracking."""
-    global detector_lock
-    results = []
-    anomaly_count = 0
-    anomaly_details = []
-    
-    for reading in readings:
+    # Process each reading one by one
+    for i, reading in enumerate(readings, 1):
         timestamp = reading.get('timestamp', datetime.utcnow().timestamp())
         vibration = reading.get('vibration', reading.get('value', 0.0))
         
+        print(f"  Processing {i}/{batch_size}...")
+        
         try:
-            # Run hybrid detection (serialize access - detector is not thread-safe)
-            with detector_lock:
-                detection = detector.detect(vibration)
+            # Run hybrid detection
+            detection = detector.detect(vibration)
             
             is_anomaly = detection['is_anomaly']
             confidence = detection.get('confidence', 0.0)
@@ -272,21 +235,25 @@ def _process_readings_batch(readings, device_id, detector, monitor):
             }
             results.append(result)
             
+            # Log result
+            status = "🚨 ANOMALY" if is_anomaly else "✓ normal"
+            print(f"  Finished {i}/{batch_size}: v={vibration:.4f} → {status}")
+            
             if is_anomaly:
                 anomaly_count += 1
-                anomaly_details.append(f"v={vibration:.4f},score={anomaly_score:.3f}")
-                
-                # Log to Cloud Monitoring
+                # Log to Cloud Monitoring immediately
                 if monitor:
+                    print(f"  Sending anomaly to monitor...")
                     monitor.log_anomaly(
                         timestamp=timestamp,
                         vibration=vibration,
                         confidence=confidence,
                         device_id=device_id
                     )
-            
+                    print(f"  ✓ Sent to monitor")
+                    
         except Exception as e:
-            print(f"✗ Error processing reading: {e}")
+            print(f"  ✗ Error processing {i}/{batch_size}: {e}")
             results.append({
                 'timestamp': timestamp,
                 'vibration': vibration,
@@ -295,15 +262,28 @@ def _process_readings_batch(readings, device_id, detector, monitor):
                 'error': str(e)
             })
     
-    # Log anomaly summary if any found (using lock for thread safety)
-    if anomaly_count > 0:
-        with log_lock:
-            details_str = ', '.join(anomaly_details[:3])
-            if len(anomaly_details) > 3:
-                details_str += f", ... (+{len(anomaly_details) - 3} more)"
-            print(f"    🚨 Anomalies: [{details_str}]")
+    # Track carbon after all readings processed
+    if carbon_monitor:
+        print(f"  Tracking carbon emissions for {batch_size} inferences...")
+        with carbon_monitor.track_inference(batch_size=batch_size):
+            pass  # Just tracking the batch
+        print(f"  ✓ Carbon tracked")
     
-    return results, anomaly_count
+    # Get stats
+    stats = detector.get_stats()
+    carbon_stats = carbon_monitor.get_stats() if carbon_monitor else {}
+    
+    print(f"  ✓ Batch complete: {anomaly_count}/{batch_size} anomalies")
+    
+    return {
+        'device_id': device_id,
+        'readings': results,
+        'count': len(results),
+        'anomalies_detected': anomaly_count,
+        'ml_fitted': stats.get('ml_fitted', False),
+        'carbon_emissions_gco2e': carbon_stats.get('total_emissions_gco2e', 0) if carbon_stats else None,
+        'processed_at': datetime.utcnow().isoformat()
+    }
 
 
 def publish_results(results: dict):
@@ -330,14 +310,14 @@ def publish_results(results: dict):
         return True
         
     except Exception as e:
-        with log_lock:
-            print(f"    ✗ Publish failed: {e}")
+        print(f"  ✗ Publish failed: {e}")
         return False
 
 
 def message_callback(message):
     """
     Callback for processing incoming Pub/Sub messages.
+    Processes one batch at a time, fully sequential.
     
     Args:
         message: Pub/Sub message object
@@ -345,7 +325,7 @@ def message_callback(message):
     global batch_counter
     
     try:
-        # Acknowledge immediately to prevent redelivery during long processing
+        # Acknowledge immediately to prevent redelivery
         message.ack()
         
         # Decode message
@@ -355,32 +335,28 @@ def message_callback(message):
         reading_count = data.get('count', len(data.get('readings', [])))
         
         # Assign batch ID for tracking
-        with log_lock:
-            batch_counter += 1
-            batch_id = batch_counter
-            print(f"\n[Batch #{batch_id}] ← Received {reading_count} readings from {device_id}")
+        batch_counter += 1
+        batch_id = batch_counter
         
-        # Process through heavy model - use perf_counter for accurate timing
+        print(f"\n{'='*60}")
+        print(f"[Batch #{batch_id}] Received {reading_count} readings from {device_id}")
+        print(f"{'='*60}")
+        
+        # Process through heavy model
         start_time = time.perf_counter()
-        
-        with log_lock:
-            print(f"[Batch #{batch_id}] Starting processing...")
-        
         results = process_batch(data)
         processing_time_ms = (time.perf_counter() - start_time) * 1000
         
-        with log_lock:
-            print(f"[Batch #{batch_id}] Processing complete, publishing...")
-        
         # Publish results
+        print(f"  Publishing results to anomaly-results topic...")
         publish_success = publish_results(results)
         
-        # Log results atomically to avoid interleaving
-        with log_lock:
-            print(f"[Batch #{batch_id}] ✓ Processed in {processing_time_ms:.1f} ms "
-                  f"({processing_time_ms/reading_count:.1f} ms/reading) | "
-                  f"Anomalies: {results.get('anomalies_detected', 0)}/{reading_count} | "
-                  f"Published: {'✓' if publish_success else '✗'}")
+        # Summary
+        print(f"\n[Batch #{batch_id}] COMPLETE")
+        print(f"  Time: {processing_time_ms:.1f} ms ({processing_time_ms/reading_count:.1f} ms/reading)")
+        print(f"  Anomalies: {results.get('anomalies_detected', 0)}/{reading_count}")
+        print(f"  Published: {'✓' if publish_success else '✗'}")
+        print(f"{'='*60}\n")
             
     except json.JSONDecodeError as e:
         print(f"✗ Invalid JSON in message: {e}")
@@ -388,7 +364,9 @@ def message_callback(message):
         
     except Exception as e:
         print(f"✗ Error processing message: {e}")
-        message.nack()  # Retry on unexpected errors
+        import traceback
+        traceback.print_exc()
+        # Still ack to prevent infinite retry - message will be lost but won't block
 
 
 def start_subscriber():
@@ -402,10 +380,11 @@ def start_subscriber():
     subscription_path = subscriber.subscription_path(PROJECT_ID, SENSOR_SUBSCRIPTION)
     
     print(f"\n[Subscriber] Listening on {subscription_path}...")
+    print(f"[Subscriber] Mode: Sequential (1 batch at a time)")
     
-    # Configure flow control and timeout settings
+    # Configure flow control: only 1 message at a time for sequential processing
     flow_control = pubsub_v1.types.FlowControl(
-        max_messages=10,  # Process up to 10 messages concurrently (reduced to prevent CPU contention)
+        max_messages=1,  # Process exactly 1 batch at a time - fully sequential
         max_bytes=10 * 1024 * 1024,  # 10 MB
     )
     
