@@ -91,7 +91,6 @@ class CarbonMonitor:
         """Initialize GCP Cloud Monitoring client and create metric descriptors."""
         try:
             self._monitoring_client = monitoring_v3.MetricServiceClient()
-            print("[CarbonMonitor] Cloud Monitoring client initialized")
             self._create_metric_descriptors()
         except Exception as e:
             print(f"[CarbonMonitor] Failed to init Cloud Monitoring: {e}")
@@ -151,38 +150,29 @@ class CarbonMonitor:
                     metric_descriptor=descriptor,
                     timeout=10.0
                 )
-                print(f"[CarbonMonitor] Created metric descriptor: {desc_config['type']}")
                 
             except Exception as e:
-                # Ignore if descriptor already exists
-                if "already exists" in str(e).lower():
-                    print(f"[CarbonMonitor] Metric descriptor already exists: {desc_config['type']}")
-                else:
-                    print(f"[CarbonMonitor] Failed to create descriptor {desc_config['type']}: {e}")
+                # Ignore if descriptor already exists or other errors
+                pass
     
     def _start_reporter(self):
         """Start background thread for periodic metric reporting."""
         self._running = True
         self._reporter_thread = threading.Thread(target=self._report_loop, daemon=True)
         self._reporter_thread.start()
-        print(f"[CarbonMonitor] Background reporter thread started (daemon={self._reporter_thread.daemon})")
     
     def _report_loop(self):
         """Background loop that reports aggregated metrics periodically."""
-        print(f"[CarbonMonitor] Reporter thread started, will report every {self.REPORT_INTERVAL}s")
         while self._running:
             time.sleep(self.REPORT_INTERVAL)
             if self._running:
-                print(f"[CarbonMonitor] Reporter waking up to flush metrics...")
                 self._flush_pending_metrics()
     
     def _flush_pending_metrics(self):
         """Flush pending emissions to Cloud Monitoring."""
         with self._lock:
-            print(f"[CarbonMonitor] Checking pending metrics: {self._pending_emissions_kg:.6f} kg, {self._pending_inferences} inferences")
             if self._pending_emissions_kg <= 0 and self._pending_inferences <= 0:
-                print(f"[CarbonMonitor] No pending metrics to report, skipping")
-                return
+                return  # Nothing to report, skip silently
             
             emissions_to_report = self._pending_emissions_kg
             inferences_to_report = self._pending_inferences
@@ -196,8 +186,7 @@ class CarbonMonitor:
         emissions_grams = emissions_to_report * 1000
         total_grams = total_emissions * 1000
         
-        print(f"[CarbonMonitor] Reporting: {emissions_grams:.6f} gCO₂e "
-              f"({inferences_to_report} inferences) | Total: {total_grams:.6f} gCO₂e")
+        print(f"[Carbon] Reporting: {emissions_grams:.4f} gCO₂e from {inferences_to_report} inferences | Cumulative: {total_grams:.4f} gCO₂e")
         
         # Write metrics to Cloud Monitoring
         if self._monitoring_client:
@@ -284,19 +273,17 @@ class CarbonMonitor:
                         time_series=[series],
                         timeout=5.0  # Shorter timeout for faster failures
                     )
-                    print(f"[CarbonMonitor] ✓ Wrote metric {metric_type.split('/')[-1]}: {value}")
                     break  # Success
                 except Exception as retry_err:
                     if attempt < max_retries and "504" in str(retry_err):
-                        print(f"[CarbonMonitor] Retry {attempt+1}/{max_retries} for {metric_type.split('/')[-1]} due to 504")
                         continue
                     else:
                         # Give up after retries
                         raise retry_err
             
         except Exception as e:
-            # Log all errors for debugging
-            print(f"[CarbonMonitor] ✗ Failed to write metric {metric_type.split('/')[-1]}: {e}")
+            # Silently ignore metric write failures - they're not critical
+            pass
     
     @contextmanager
     def track_inference(self, batch_size: int = 1):
@@ -359,7 +346,6 @@ class CarbonMonitor:
             if emissions_kg == 0 or emissions_kg is None or tracker_failed:
                 # Estimate: ~0.000005 gCO2e per inference (Finland low-carbon grid)
                 emissions_kg = 0.000000005 * batch_size  # 0.005 mg CO2e per inference
-                print(f"[CarbonMonitor] Using fallback estimation: {emissions_kg * 1000:.6f} gCO₂e for {batch_size} samples")
             
             # Update totals
             with self._lock:
@@ -367,16 +353,8 @@ class CarbonMonitor:
                 self.total_inferences += batch_size
                 self._pending_emissions_kg += emissions_kg
                 self._pending_inferences += batch_size
-                
-                print(f"[CarbonMonitor] Accumulated: pending={self._pending_emissions_kg:.9f} kg, "
-                      f"total={self.total_emissions_kg:.9f} kg, inferences={self.total_inferences}")
             
-            # Log if significant
-            if emissions_kg > 0:
-                emissions_grams = emissions_kg * 1000
-                per_sample_grams = emissions_grams / batch_size if batch_size > 0 else 0
-                print(f"[CarbonMonitor] Batch: {emissions_grams:.6f} gCO₂e "
-                      f"({per_sample_grams:.6f} gCO₂e/sample, n={batch_size})")
+            # Batch logging removed - will be aggregated in periodic reports
     
     def track_single_inference(self) -> float:
         """
@@ -442,8 +420,6 @@ class CarbonMonitor:
         """Flush pending metrics and stop the background reporter."""
         self._running = False
         self._flush_pending_metrics()
-        print(f"[CarbonMonitor] Flushed. Total: {self.total_emissions_kg * 1000:.6f} gCO₂e "
-              f"over {self.total_inferences} inferences")
     
     def __del__(self):
         """Cleanup on destruction."""

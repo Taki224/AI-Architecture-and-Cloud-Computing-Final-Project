@@ -137,7 +137,9 @@ class AnomalyMonitor:
             # Calculate rate (anomalies per minute)
             anomaly_rate = len(self._anomaly_times)
         
-        print(f"[Monitor] Anomaly rate: {anomaly_rate}/min (last 60s)")
+        # Only log if there are anomalies to report
+        if anomaly_rate > 0:
+            print(f"[Monitor] Anomaly rate: {anomaly_rate}/min (last 60s)")
         
         # Export to Cloud Monitoring
         if self._monitoring_client:
@@ -196,9 +198,8 @@ class AnomalyMonitor:
                         raise retry_err
             
         except Exception as e:
-            # Silently skip 504 errors to avoid log spam
-            if "504" not in str(e):
-                print(f"[Monitor] Failed to write metric: {e}")
+            # Silently ignore metric write errors - not critical for operation
+            pass
     
     def log_anomaly(
         self,
@@ -295,5 +296,3 @@ class AnomalyMonitor:
                 pass
             except Exception:
                 pass
-        
-        print("[Monitor] Flushed and stopped")
