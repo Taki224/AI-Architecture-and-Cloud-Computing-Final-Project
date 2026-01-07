@@ -87,6 +87,12 @@ def init_detector():
     try:
         import joblib
         detector = joblib.load(model_path)
+        
+        # CRITICAL: Force n_jobs=1 on loaded model to prevent CPU contention
+        if hasattr(detector, 'ml_detector') and hasattr(detector.ml_detector, 'model'):
+            detector.ml_detector.model.n_jobs = 1
+            print(f"✓ Forced IsolationForest n_jobs=1 to prevent CPU contention")
+        
         stats = detector.get_stats()
         print(f"✓ Loaded pre-trained HybridAnomalyDetector from {model_path}")
         print(f"  - ML model fitted: {stats.get('ml_fitted', False)}")

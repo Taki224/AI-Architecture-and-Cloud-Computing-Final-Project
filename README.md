@@ -427,6 +427,29 @@ See [plans/class.md](plans/class.md) for class definitions including:
   - Background reporter thread for periodic metric export (60s intervals)
   - Graceful degradation when Cloud Monitoring unavailable
 
+#### ⚠️ Scaling Constraints
+
+**Current Configuration: Sequential Processing Only**
+
+The heavy-model-service is deployed with `--max-instances=1 --concurrency=1` to enforce sequential batch processing. This is required because:
+
+- **Google Cloud Monitoring GAUGE metrics** have a **60-second minimum sampling interval**
+- Multiple concurrent instances would attempt to write metrics within the same time window, causing "Points must be written in order" errors
+- Each Cloud Run instance runs independently with its own worker thread, making distributed coordination difficult
+
+**To Enable Horizontal Scaling:**
+
+If an alternative monitoring strategy is implemented (e.g., aggregating metrics in a dedicated service, using COUNTER metrics instead of GAUGE, or disabling Cloud Monitoring integration), it is easy scale the service by adjusting the Cloud Run configuration:
+
+```yaml
+# In deployment/gcp/cloudbuild.yaml and .github/workflows/deploy.yml
+--max-instances=10        # Allow up to 10 concurrent instances
+--concurrency=80          # Handle 80 concurrent requests per instance
+--timeout=300             # Keep generous timeout for batch processing
+```
+
+This would enable the service to process multiple batches in parallel across different instances, significantly improving throughput.
+
 ---
 
 ## Getting Started
