@@ -72,8 +72,19 @@ To ensure **reliability and observability**, the system uses **estimation-based 
 |-----------|-------|-----------|
 | vCPU Power (TDP) | ~15W | Typical cloud instance vCPU allocation (Intel/AMD server processors) |
 | Grid Carbon Intensity | ~0.1 kgCO₂e/kWh | Finland average (europe-north1 region - low carbon grid) |
-| Inference Time | ~0.1s | Conservative estimate for ensemble ML prediction |
-| **Per-inference emission** | **~0.005 mg CO₂e** | 15W × 0.1s = 1.5 Wh → 0.0000015 kWh × 0.1 = 0.00000015 kg |
+| Inference Time | **Measured dynamically** | Actual inference time measured per batch (typically 8-12s per reading with 200-estimator IsolationForest) |
+| **Per-inference emission** | **~0.004 gCO₂e (4 mg)** | 15W × 10s = 150 Wh → 0.0417 Wh → 0.0000417 kWh × 0.1 = 0.00000417 kg |
+
+**Dynamic Carbon Tracking:**
+The system now measures the actual inference time for each batch and uses that to calculate carbon emissions:
+```
+Energy (kWh) = (Power_W × Time_s) / 3600
+Carbon (kg) = Energy_kWh × Grid_Intensity_kg/kWh
+```
+
+For example, a batch of 10 readings taking 95 seconds total:
+- Energy: `(15W × 95s) / 3600 = 0.396 Wh = 0.000396 kWh`
+- Carbon: `0.000396 × 0.1 = 0.0000396 kg = 0.0396 gCO₂e`
 
 **Why Finland's Grid?**
 Finland (europe-north1) has one of the lowest carbon intensities in Europe (~100 gCO₂e/kWh) due to:
@@ -81,7 +92,7 @@ Finland (europe-north1) has one of the lowest carbon intensities in Europe (~100
 - 40% renewable energy (hydro, wind, biomass)
 - 20% fossil fuels
 
-This estimation ensures the carbon dashboard displays realistic, non-zero values for cloud workloads while clearly indicating these are **estimates** rather than direct measurements.
+This estimation ensures the carbon dashboard displays realistic, non-zero values for cloud workloads based on **actual measured inference time** while clearly indicating these are **estimates** rather than direct hardware measurements.
 
 **Enabling Real Measurements (Not Recommended):**
 Set `CODECARBON_ENABLED=true` environment variable to enable actual CodeCarbon tracking. This may cause performance issues or hangs in cloud environments and is only suitable for local development with hardware access.

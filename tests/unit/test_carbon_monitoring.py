@@ -69,14 +69,15 @@ class TestCarbonTracking:
             mode="PERFORMANCE"
         )
         
-        # Track a batch of 10 inferences (uses estimation by default)
+        # Track a batch of 10 inferences (uses estimation with 10s default per batch)
         with monitor.track_inference(batch_size=10):
             pass  # Simulate inference
         
-        # Check emissions were recorded (estimation-based: 0.000000005 kg per inference)
+        # Check emissions were recorded (estimation: 15W * 10s / 3600 * 0.1 = 0.004166... kg)
+        EXPECTED_EMISSIONS = (15.0 * 10.0 / 3600) * 0.1  # 0.004166... kg
         assert monitor.total_inferences == 10
         assert monitor.total_emissions_kg > 0  # Should have some emissions recorded
-        assert monitor.total_emissions_kg == 10 * 0.000000005  # Exact estimation
+        assert abs(monitor.total_emissions_kg - EXPECTED_EMISSIONS) < 0.000001  # Allow small float difference
     
     def test_record_emissions_manually(self, mock_monitoring_client):
         """Test manually recording emissions."""
@@ -106,13 +107,35 @@ class TestCarbonTracking:
             mode="PERFORMANCE"
         )
         
-        # Track multiple batches
+        # Track multiple batches (3 batches × 10s default = 30s total)
         for i in range(3):
             with monitor.track_inference(batch_size=10):
                 pass
         
+        # Each batch: 15W * 10s / 3600 * 0.1 = 0.004166... kg
+        EXPECTED_EMISSIONS_PER_BATCH = (15.0 * 10.0 / 3600) * 0.1
+        EXPECTED_TOTAL = EXPECTED_EMISSIONS_PER_BATCH * 3
+        
         assert monitor.total_inferences == 30
-        assert monitor.total_emissions_kg == 30 * 0.000000005  # Estimation-based
+        assert abs(monitor.total_emissions_kg - EXPECTED_TOTAL) < 0.000001  # Allow small float difference
+
+    def test_track_inference_with_actual_time(self, mock_monitoring_client):
+        """Test tracking inference with actual measured time."""
+        monitor = CarbonMonitor(
+            project_id="test-project",
+            service_name="heavy-model",
+            mode="PERFORMANCE"
+        )
+        
+        # Track with actual inference time (5000ms = 5s for batch of 10)
+        with monitor.track_inference(batch_size=10, inference_time_ms=5000):
+            pass
+        
+        # Calculate expected: 15W * 5s / 3600 * 0.1 = 0.002083... kg
+        EXPECTED_EMISSIONS = (15.0 * 5.0 / 3600) * 0.1
+        
+        assert monitor.total_inferences == 10
+        assert abs(monitor.total_emissions_kg - EXPECTED_EMISSIONS) < 0.000001
 
 
 class TestMetricsExport:
