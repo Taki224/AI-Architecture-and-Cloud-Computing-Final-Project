@@ -328,7 +328,6 @@ class CarbonMonitor:
                 log_level="error",  # Suppress verbose output
                 tracking_mode="machine",  # Machine mode works better on cloud
                 allow_multiple_runs=True,  # Allow concurrent tracking
-                default_cpu_power=15,  # Default TDP for cloud vCPUs (watts)
             )
         except Exception as e:
             print(f"[CarbonMonitor] Failed to create tracker: {e}, using fallback estimation")
