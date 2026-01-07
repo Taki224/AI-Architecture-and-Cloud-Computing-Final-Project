@@ -75,7 +75,7 @@ class CarbonMonitor:
         
         # Track last metric write timestamps per metric type to avoid "out of order" errors
         self._last_metric_write_times = {}
-        self._min_metric_interval = 10  # seconds
+        self._min_metric_interval = 60  # seconds (GCP requires 60s minimum for GAUGE metrics)
         
         # Initialize Cloud Monitoring client
         self._monitoring_client = None
@@ -240,51 +240,61 @@ class CarbonMonitor:
                 return  # Skip - too soon since last write
             self._last_metric_write_times[metric_type] = now
         
-        try:
-            project_name = f"projects/{self.project_id}"
-            
-            series = monitoring_v3.TimeSeries()
-            series.metric.type = metric_type
-            series.metric.labels["service"] = self.service_name
-            series.metric.labels["mode"] = self.mode
-            
-            # Use global resource type
-            series.resource.type = "global"
-            series.resource.labels["project_id"] = self.project_id
-            
-            # Set timestamp
-            seconds = int(now)
-            nanos = int((now - seconds) * 10**9)
-            
-            interval = monitoring_v3.TimeInterval({
-                "end_time": {"seconds": seconds, "nanos": nanos}
-            })
-            
-            # Set value based on type
-            if value_type == "int64_value":
-                point_value = {"int64_value": int(value)}
-            else:
-                point_value = {"double_value": float(value)}
-            
-            point = monitoring_v3.Point({
-                "interval": interval,
-                "value": point_value
-            })
-            
-            series.points = [point]
-            
-            self._monitoring_client.create_time_series(
-                name=project_name,
-                time_series=[series],
-                timeout=5.0  # Shorter timeout for faster failures
-            )
-            
-        except Exception as e:
-            # Log but don't fail - metrics are not critical
-            if "504" in str(e):
-                print(f"[Carbon] Metric write timeout (504) - skipping")
-            elif "must be written in order" not in str(e).lower():
-                print(f"[Carbon] Metric write failed: {e}")
+        # Fire and forget in background thread to avoid blocking
+        def write_async():
+            try:
+                project_name = f"projects/{self.project_id}"
+                
+                series = monitoring_v3.TimeSeries()
+                series.metric.type = metric_type
+                series.metric.labels["service"] = self.service_name
+                series.metric.labels["mode"] = self.mode
+                
+                # Use global resource type
+                series.resource.type = "global"
+                series.resource.labels["project_id"] = self.project_id
+                
+                # Set timestamp
+                write_time = time.time()
+                seconds = int(write_time)
+                nanos = int((write_time - seconds) * 10**9)
+                
+                interval = monitoring_v3.TimeInterval({
+                    "end_time": {"seconds": seconds, "nanos": nanos}
+                })
+                
+                # Set value based on type
+                if value_type == "int64_value":
+                    point_value = {"int64_value": int(value)}
+                else:
+                    point_value = {"double_value": float(value)}
+                
+                point = monitoring_v3.Point({
+                    "interval": interval,
+                    "value": point_value
+                })
+                
+                series.points = [point]
+                
+                self._monitoring_client.create_time_series(
+                    name=project_name,
+                    time_series=[series],
+                    timeout=30.0  # Longer timeout for cloud environments
+                )
+                
+            except Exception as e:
+                err_str = str(e).lower()
+                if "504" in err_str or "deadline" in err_str:
+                    print(f"[Carbon] Metric write timeout - skipping")
+                elif "must be written in order" in err_str:
+                    print(f"[Carbon] Metric out of order - skipping")
+                elif "more frequently" in err_str:
+                    print(f"[Carbon] Metric rate limited - skipping")
+                else:
+                    print(f"[Carbon] Metric write failed: {e}")
+        
+        # Run in background thread
+        threading.Thread(target=write_async, daemon=True).start()
     
     @contextmanager
     def track_inference(self, batch_size: int = 1):

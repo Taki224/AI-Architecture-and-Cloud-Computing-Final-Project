@@ -164,60 +164,54 @@ class AnomalyMonitor:
             time_since_last = now - self._last_metric_write_time
             if time_since_last < self.MIN_METRIC_INTERVAL_SECONDS:
                 # Skip this write - too soon after the last one
-                print(f"[Monitor] Skipping write - only {time_since_last:.1f}s since last write (need {self.MIN_METRIC_INTERVAL_SECONDS}s)")
                 return
             self._last_metric_write_time = now
         
-        try:
-            from google.cloud import monitoring_v3
-            
-            project_name = f"projects/{self.project_id}"
-            
-            series = monitoring_v3.TimeSeries()
-            series.metric.type = self.METRIC_TYPE
-            series.resource.type = "global"
-            
-            seconds = int(now)
-            nanos = int((now - seconds) * 10**9)
-            
-            interval = monitoring_v3.TimeInterval({
-                "end_time": {"seconds": seconds, "nanos": nanos}
-            })
-            
-            point = monitoring_v3.Point({
-                "interval": interval,
-                "value": {"double_value": value}
-            })
-            
-            series.points = [point]
-            
-            # Try to write with retries
-            max_retries = 2
-            for attempt in range(max_retries + 1):
-                try:
-                    self._monitoring_client.create_time_series(
-                        name=project_name,
-                        time_series=[series],
-                        timeout=5.0  # Shorter timeout for faster failures
-                    )
-                    break  # Success
-                except Exception as retry_err:
-                    if attempt < max_retries and "504" in str(retry_err):
-                        # Retry on 504 errors
-                        continue
-                    elif "must be written in order" in str(retry_err).lower():
-                        # Skip timestamp ordering errors - expected during rapid shutdown
-                        break
-                    elif "more frequently than the maximum sampling period" in str(retry_err).lower():
-                        # Skip sampling period errors - GCP enforces minimum intervals
-                        break
-                    else:
-                        # Give up after retries
-                        raise retry_err
-            
-        except Exception as e:
-            # Log metric write errors but don't fail - not critical for operation
-            print(f"[Monitor] Failed to write metric: {e}")
+        # Fire and forget in background thread to avoid blocking
+        def write_async():
+            try:
+                from google.cloud import monitoring_v3
+                
+                project_name = f"projects/{self.project_id}"
+                
+                series = monitoring_v3.TimeSeries()
+                series.metric.type = self.METRIC_TYPE
+                series.resource.type = "global"
+                
+                write_time = time.time()
+                seconds = int(write_time)
+                nanos = int((write_time - seconds) * 10**9)
+                
+                interval = monitoring_v3.TimeInterval({
+                    "end_time": {"seconds": seconds, "nanos": nanos}
+                })
+                
+                point = monitoring_v3.Point({
+                    "interval": interval,
+                    "value": {"double_value": value}
+                })
+                
+                series.points = [point]
+                
+                self._monitoring_client.create_time_series(
+                    name=project_name,
+                    time_series=[series],
+                    timeout=30.0  # Longer timeout for cloud environments
+                )
+                
+            except Exception as e:
+                err_str = str(e).lower()
+                if "504" in err_str or "deadline" in err_str:
+                    print(f"[Monitor] Metric write timeout - skipping")
+                elif "must be written in order" in err_str:
+                    print(f"[Monitor] Metric out of order - skipping")
+                elif "more frequently" in err_str:
+                    print(f"[Monitor] Metric rate limited - skipping")
+                else:
+                    print(f"[Monitor] Metric write failed: {e}")
+        
+        # Run in background thread
+        threading.Thread(target=write_async, daemon=True).start()
     
     def log_anomaly(
         self,
