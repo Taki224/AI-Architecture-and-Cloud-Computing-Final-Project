@@ -90,8 +90,18 @@ def init_detector():
         
         # CRITICAL: Force n_jobs=1 on loaded model to prevent CPU contention
         if hasattr(detector, 'ml_detector') and hasattr(detector.ml_detector, 'model'):
+            old_n_jobs = getattr(detector.ml_detector.model, 'n_jobs', 'unknown')
+            print(f"[Init] IsolationForest before fix: n_jobs={old_n_jobs}")
             detector.ml_detector.model.n_jobs = 1
+            detector.ml_detector.model.set_params(n_jobs=1)  # Force update
+            new_n_jobs = detector.ml_detector.model.n_jobs
+            print(f"[Init] IsolationForest after fix: n_jobs={new_n_jobs}")
             print(f"✓ Forced IsolationForest n_jobs=1 to prevent CPU contention")
+        else:
+            print(f"⚠ Could not access ml_detector.model to set n_jobs")
+            print(f"  hasattr ml_detector: {hasattr(detector, 'ml_detector')}")
+            if hasattr(detector, 'ml_detector'):
+                print(f"  hasattr model: {hasattr(detector.ml_detector, 'model')}")
         
         stats = detector.get_stats()
         print(f"✓ Loaded pre-trained HybridAnomalyDetector from {model_path}")
