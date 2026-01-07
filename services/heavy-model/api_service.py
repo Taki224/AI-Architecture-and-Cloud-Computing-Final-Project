@@ -289,13 +289,6 @@ def _process_readings_batch(readings, device_id, detector, monitor):
             })
     
     return results, anomaly_count
-        'readings': results,
-        'count': len(results),
-        'anomalies_detected': anomaly_count,
-        'ml_fitted': stats.get('ml_fitted', False),
-        'carbon_emissions_gco2e': carbon_stats.get('total_emissions_gco2e', 0) if carbon_stats else None,
-        'processed_at': datetime.utcnow().isoformat()
-    }
 
 
 def publish_results(results: dict):
