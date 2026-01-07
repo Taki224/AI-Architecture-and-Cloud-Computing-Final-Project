@@ -60,6 +60,7 @@ subscriber = None
 monitor = None
 carbon_monitor = None
 shutdown_event = threading.Event()
+batch_processing_lock = threading.Lock()  # Ensure only one batch processes at a time
 batch_counter = 0  # Counter for batch IDs
 
 # Configuration from environment
@@ -241,16 +242,14 @@ def process_batch(message_data: dict) -> dict:
             
             if is_anomaly:
                 anomaly_count += 1
-                # Log to Cloud Monitoring immediately
+                # Log to Cloud Monitoring (async, won't block)
                 if monitor:
-                    print(f"  Sending anomaly to monitor...")
                     monitor.log_anomaly(
                         timestamp=timestamp,
                         vibration=vibration,
                         confidence=confidence,
                         device_id=device_id
                     )
-                    print(f"  ✓ Sent to monitor")
                     
         except Exception as e:
             print(f"  ✗ Error processing {i}/{batch_size}: {e}")
@@ -317,56 +316,58 @@ def publish_results(results: dict):
 def message_callback(message):
     """
     Callback for processing incoming Pub/Sub messages.
-    Processes one batch at a time, fully sequential.
+    Processes one batch at a time, fully sequential using a global lock.
     
     Args:
         message: Pub/Sub message object
     """
-    global batch_counter
+    global batch_counter, batch_processing_lock
     
-    try:
-        # Acknowledge immediately to prevent redelivery
-        message.ack()
-        
-        # Decode message
-        data = json.loads(message.data.decode('utf-8'))
-        
-        device_id = data.get('device_id', 'unknown')
-        reading_count = data.get('count', len(data.get('readings', [])))
-        
-        # Assign batch ID for tracking
-        batch_counter += 1
-        batch_id = batch_counter
-        
-        print(f"\n{'='*60}")
-        print(f"[Batch #{batch_id}] Received {reading_count} readings from {device_id}")
-        print(f"{'='*60}")
-        
-        # Process through heavy model
-        start_time = time.perf_counter()
-        results = process_batch(data)
-        processing_time_ms = (time.perf_counter() - start_time) * 1000
-        
-        # Publish results
-        print(f"  Publishing results to anomaly-results topic...")
-        publish_success = publish_results(results)
-        
-        # Summary
-        print(f"\n[Batch #{batch_id}] COMPLETE")
-        print(f"  Time: {processing_time_ms:.1f} ms ({processing_time_ms/reading_count:.1f} ms/reading)")
-        print(f"  Anomalies: {results.get('anomalies_detected', 0)}/{reading_count}")
-        print(f"  Published: {'✓' if publish_success else '✗'}")
-        print(f"{'='*60}\n")
+    # Acquire lock to ensure only one batch processes at a time
+    with batch_processing_lock:
+        try:
+            # Acknowledge immediately to prevent redelivery
+            message.ack()
             
-    except json.JSONDecodeError as e:
-        print(f"✗ Invalid JSON in message: {e}")
-        message.ack()  # Ack to avoid infinite retry of bad messages
-        
-    except Exception as e:
-        print(f"✗ Error processing message: {e}")
-        import traceback
-        traceback.print_exc()
-        # Still ack to prevent infinite retry - message will be lost but won't block
+            # Decode message
+            data = json.loads(message.data.decode('utf-8'))
+            
+            device_id = data.get('device_id', 'unknown')
+            reading_count = data.get('count', len(data.get('readings', [])))
+            
+            # Assign batch ID for tracking
+            batch_counter += 1
+            batch_id = batch_counter
+            
+            print(f"\n{'='*60}")
+            print(f"[Batch #{batch_id}] Received {reading_count} readings from {device_id}")
+            print(f"{'='*60}")
+            
+            # Process through heavy model
+            start_time = time.perf_counter()
+            results = process_batch(data)
+            processing_time_ms = (time.perf_counter() - start_time) * 1000
+            
+            # Publish results
+            print(f"  Publishing results to anomaly-results topic...")
+            publish_success = publish_results(results)
+            
+            # Summary
+            print(f"\n[Batch #{batch_id}] COMPLETE")
+            print(f"  Time: {processing_time_ms:.1f} ms ({processing_time_ms/reading_count:.1f} ms/reading)")
+            print(f"  Anomalies: {results.get('anomalies_detected', 0)}/{reading_count}")
+            print(f"  Published: {'✓' if publish_success else '✗'}")
+            print(f"{'='*60}\n")
+                
+        except json.JSONDecodeError as e:
+            print(f"✗ Invalid JSON in message: {e}")
+            message.ack()  # Ack to avoid infinite retry of bad messages
+            
+        except Exception as e:
+            print(f"✗ Error processing message: {e}")
+            import traceback
+            traceback.print_exc()
+            # Still ack to prevent infinite retry - message will be lost but won't block
 
 
 def start_subscriber():

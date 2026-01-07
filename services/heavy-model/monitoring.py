@@ -245,20 +245,23 @@ class AnomalyMonitor:
             'total_anomalies': current_total
         }
         
-        # Log to Cloud Logging or stdout
+        # Log to Cloud Logging asynchronously to avoid blocking
         if self._logger:
-            try:
-                self._logger.log_struct(
-                    log_entry,
-                    severity='WARNING',
-                    labels={
-                        'device_id': device_id,
-                        'event_type': 'anomaly'
-                    }
-                )
-            except Exception as e:
-                print(f"[Monitor] Cloud Logging error: {e}")
-                self._log_to_stdout(log_entry)
+            def log_async():
+                try:
+                    self._logger.log_struct(
+                        log_entry,
+                        severity='WARNING',
+                        labels={
+                            'device_id': device_id,
+                            'event_type': 'anomaly'
+                        }
+                    )
+                except Exception as e:
+                    print(f"[Monitor] Cloud Logging error: {e}")
+            
+            import threading
+            threading.Thread(target=log_async, daemon=True).start()
         else:
             self._log_to_stdout(log_entry)
     
