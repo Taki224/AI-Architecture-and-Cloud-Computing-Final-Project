@@ -23,8 +23,8 @@ class AnomalyMonitor:
     
     METRIC_TYPE = "custom.googleapis.com/anomaly_detection/rate"
     WINDOW_SECONDS = 60
-    # Minimum interval between metric writes (Google Cloud requires monotonically increasing timestamps)
-    MIN_METRIC_INTERVAL_SECONDS = 10
+    # Minimum interval between metric writes (GCP requires 60s for GAUGE metrics)
+    MIN_METRIC_INTERVAL_SECONDS = 60
     
     def __init__(self, project_id: str):
         """
@@ -206,6 +206,9 @@ class AnomalyMonitor:
                     elif "must be written in order" in str(retry_err).lower():
                         # Skip timestamp ordering errors - expected during rapid shutdown
                         break
+                    elif "more frequently than the maximum sampling period" in str(retry_err).lower():
+                        # Skip sampling period errors - GCP enforces minimum intervals
+                        break
                     else:
                         # Give up after retries
                         raise retry_err
@@ -304,8 +307,7 @@ class AnomalyMonitor:
         if self._reporter_thread and self._reporter_thread.is_alive():
             self._reporter_thread.join(timeout=2.0)
         
-        # Final metric report (will skip if too soon after last write)
-        self._report_anomaly_rate()
+        # Don't write final metric - reporter thread just ran (avoids GCP sampling period errors)
         
         print("[Monitor] Flushed and stopped")
         
