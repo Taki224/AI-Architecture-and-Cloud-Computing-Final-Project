@@ -15,6 +15,7 @@ import json
 import threading
 import signal
 import warnings
+import time
 from datetime import datetime
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 
@@ -59,6 +60,8 @@ subscriber = None
 monitor = None
 carbon_monitor = None
 shutdown_event = threading.Event()
+log_lock = threading.Lock()  # Thread lock for synchronized logging
+batch_counter = 0  # Counter for batch IDs
 
 # Configuration from environment
 PROJECT_ID = os.getenv('GOOGLE_CLOUD_PROJECT', 'local-project')
@@ -209,18 +212,18 @@ def process_batch(message_data: dict) -> dict:
     else:
         results, anomaly_count = _process_readings_batch(readings, device_id, detector, monitor)
     
-    # Summary logging
+    # Summary logging (only anomalies and carbon stats, rest is logged by message_callback)
     stats = detector.get_stats()
     carbon_stats = carbon_monitor.get_stats() if carbon_monitor else {}
     
-    print(f"[Processing] Completed {len(readings)} readings | "
-          f"Anomalies: {anomaly_count} ({anomaly_count/len(readings)*100:.1f}%) | "
-          f"ML fitted: {stats.get('ml_fitted', False)} | "
-          f"Method: {results[0].get('method', 'unknown') if results else 'unknown'}")
+    # Only log anomalies if any detected
+    if anomaly_count > 0:
+        with log_lock:
+            print(f"    🚨 {anomaly_count} anomalies detected in batch")
     
+    # Only log carbon if we have meaningful data
     if carbon_stats and carbon_stats.get('total_emissions_gco2e', 0) > 0:
-        print(f"[Carbon] {carbon_stats.get('total_emissions_gco2e', 0):.6f} gCO₂e | "
-              f"{carbon_stats.get('avg_emissions_per_inference_gco2e', 0):.6f} gCO₂e/inference")
+        pass  # Carbon is tracked internally, no need for verbose logging
     
     return {
         'device_id': device_id,
@@ -289,9 +292,13 @@ def _process_readings_batch(readings, device_id, detector, monitor):
                 'error': str(e)
             })
     
-    # Log anomaly summary if any found
+    # Log anomaly summary if any found (using lock for thread safety)
     if anomaly_count > 0:
-        print(f"🚨 {anomaly_count} ANOMALIES detected: [{', '.join(anomaly_details[:5])}{'...' if len(anomaly_details) > 5 else ''}]")
+        with log_lock:
+            details_str = ', '.join(anomaly_details[:3])
+            if len(anomaly_details) > 3:
+                details_str += f", ... (+{len(anomaly_details) - 3} more)"
+            print(f"    🚨 Anomalies: [{details_str}]")
     
     return results, anomaly_count
 
@@ -302,29 +309,26 @@ def publish_results(results: dict):
     
     Args:
         results: Dict containing processed readings with anomaly predictions
+        
+    Returns:
+        bool: True if publish succeeded, False otherwise
     """
     global publisher
     
     if publisher is None:
-        print("⚠ Publisher not available, results not sent")
         return False
     
     try:
         topic_path = publisher.topic_path(PROJECT_ID, ANOMALY_TOPIC)
         data = json.dumps(results).encode('utf-8')
-        data_size_kb = len(data) / 1024
         
         future = publisher.publish(topic_path, data)
-        message_id = future.result(timeout=10)
-        
-        print(f"[Publisher] ✓ Published to {ANOMALY_TOPIC} | "
-              f"msg_id: {message_id[:8]}... | "
-              f"size: {data_size_kb:.2f} KB | "
-              f"device: {results.get('device_id', 'unknown')}")
+        future.result(timeout=10)
         return True
         
     except Exception as e:
-        print(f"✗ [Publisher] Failed to publish: {e}")
+        with log_lock:
+            print(f"    ✗ Publish failed: {e}")
         return False
 
 
@@ -335,6 +339,8 @@ def message_callback(message):
     Args:
         message: Pub/Sub message object
     """
+    global batch_counter
+    
     try:
         # Decode message
         data = json.loads(message.data.decode('utf-8'))
@@ -342,25 +348,34 @@ def message_callback(message):
         device_id = data.get('device_id', 'unknown')
         reading_count = data.get('count', len(data.get('readings', [])))
         
-        print(f"\n[Subscriber] ← Received batch: {reading_count} readings from {device_id}")
+        # Assign batch ID for tracking
+        with log_lock:
+            batch_counter += 1
+            batch_id = batch_counter
+            print(f"\n[Batch #{batch_id}] ← Received {reading_count} readings from {device_id}")
         
-        # Process through heavy model
-        start_time = datetime.utcnow()
+        # Process through heavy model - use perf_counter for accurate timing
+        start_time = time.perf_counter()
         results = process_batch(data)
-        processing_time_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-        
-        print(f"[Timing] Processing took {processing_time_ms:.1f} ms ({processing_time_ms/reading_count:.1f} ms/reading)")
+        processing_time_ms = (time.perf_counter() - start_time) * 1000
         
         # Publish results
         publish_success = publish_results(results)
         
+        # Log results atomically to avoid interleaving
+        with log_lock:
+            print(f"[Batch #{batch_id}] ✓ Processed in {processing_time_ms:.1f} ms "
+                  f"({processing_time_ms/reading_count:.1f} ms/reading) | "
+                  f"Anomalies: {results.get('anomalies_detected', 0)}/{reading_count} | "
+                  f"Published: {'✓' if publish_success else '✗'}")
+        
         # Only acknowledge after successful processing and publishing
         if publish_success or results.get('error'):
             message.ack()
-            print(f"[Subscriber] ✓ Message acknowledged\n")
         else:
             # Don't ack - will be redelivered
-            print(f"[Subscriber] Message NOT acknowledged - will retry")
+            with log_lock:
+                print(f"[Batch #{batch_id}] ⚠ NOT acknowledged - will retry")
             message.nack()
             
     except json.JSONDecodeError as e:
