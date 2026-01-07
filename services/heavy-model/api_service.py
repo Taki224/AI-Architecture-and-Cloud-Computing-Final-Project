@@ -61,6 +61,7 @@ monitor = None
 carbon_monitor = None
 shutdown_event = threading.Event()
 processing_queue = None  # Queue for sequential message processing
+worker_thread = None  # Single worker thread for processing
 batch_counter = 0  # Counter for batch IDs
 
 # Configuration from environment
@@ -404,21 +405,26 @@ def process_messages_worker():
 
 def start_subscriber():
     """Start the Pub/Sub subscriber with dedicated worker thread for sequential processing."""
-    global subscriber, processing_queue
+    global subscriber, processing_queue, worker_thread
     
     if subscriber is None:
         print("✗ Subscriber not initialized")
         return None
     
-    # Initialize processing queue
-    import queue
-    processing_queue = queue.Queue()
+    # Initialize processing queue ONCE (if not already initialized)
+    if processing_queue is None:
+        import queue
+        processing_queue = queue.Queue()
+        print(f"[Subscriber] Initialized processing queue")
     
-    # Start worker thread for sequential processing
-    import threading
-    worker_thread = threading.Thread(target=process_messages_worker, daemon=True, name="MessageWorker")
-    worker_thread.start()
-    print(f"[Subscriber] Started sequential message processing worker")
+    # Start worker thread ONCE (if not already running)
+    if worker_thread is None or not worker_thread.is_alive():
+        import threading
+        worker_thread = threading.Thread(target=process_messages_worker, daemon=True, name="MessageWorker")
+        worker_thread.start()
+        print(f"[Subscriber] Started sequential message processing worker (Thread-{worker_thread.ident})")
+    else:
+        print(f"[Subscriber] Worker thread already running (Thread-{worker_thread.ident})")
     
     subscription_path = subscriber.subscription_path(PROJECT_ID, SENSOR_SUBSCRIPTION)
     
