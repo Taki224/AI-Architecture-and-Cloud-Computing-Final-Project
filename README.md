@@ -776,3 +776,17 @@ FinalProject/
 ├── docker-compose.yml          # Local light-model service
 └── README.md                   # This file
 ```
+
+---
+
+## Work Distribution
+
+**Balint Takacs:**
+- Edge Implementation: Developed [local_sensor_gui.py](services/edge/local_sensor_gui.py), the Sensor Simulator, and GUI
+- CI/CD Pipeline: Configured GitHub Actions and Cloud Build workflows
+
+**Gergo Feiler:**
+- Test Suite Implementation: Developed unit tests and pytest fixtures ([tests/](tests/) directory)
+- Quality Assurance: System validation and ensuring robustness of detection logic
+
+**Shared Contribution:** Google Cloud Platform Architecture (Pub/Sub & Cloud Run)
