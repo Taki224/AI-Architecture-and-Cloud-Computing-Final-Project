@@ -183,9 +183,14 @@ class IsolationForestDetector:
         # If we have enough window data, we can also get ML prediction as secondary signal
         ml_anomaly = False
         if len(self.window) >= self.window_size:
+            import time
+            t1 = time.perf_counter()
             features = self._extract_features(list(self.window))
+            t2 = time.perf_counter()
             prediction = self.model.predict(features)[0]
+            t3 = time.perf_counter()
             ml_anomaly = prediction == -1
+            print(f"      [TIMING-ML] extract_features: {(t2-t1)*1000:.1f}ms, predict: {(t3-t2)*1000:.1f}ms")
         
         return {
             "is_anomaly": is_anomaly,
