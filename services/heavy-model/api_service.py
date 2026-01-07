@@ -216,8 +216,11 @@ def process_batch(message_data: dict) -> dict:
         print(f"  Processing {i}/{batch_size}...")
         
         try:
-            # Run hybrid detection
+            # Run hybrid detection with timing
+            t_start = time.perf_counter()
             detection = detector.detect(vibration)
+            t_detect = (time.perf_counter() - t_start) * 1000
+            print(f"    [TIMING] detect() took {t_detect:.1f}ms")
             
             is_anomaly = detection['is_anomaly']
             confidence = detection.get('confidence', 0.0)
@@ -246,12 +249,15 @@ def process_batch(message_data: dict) -> dict:
                 anomaly_count += 1
                 # Log to Cloud Monitoring (async, won't block)
                 if monitor:
+                    t_log_start = time.perf_counter()
                     monitor.log_anomaly(
                         timestamp=timestamp,
                         vibration=vibration,
                         confidence=confidence,
                         device_id=device_id
                     )
+                    t_log = (time.perf_counter() - t_log_start) * 1000
+                    print(f"    [TIMING] log_anomaly() took {t_log:.1f}ms")
                     
         except Exception as e:
             print(f"  ✗ Error processing {i}/{batch_size}: {e}")
