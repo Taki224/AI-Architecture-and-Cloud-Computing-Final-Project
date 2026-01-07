@@ -61,6 +61,7 @@ monitor = None
 carbon_monitor = None
 shutdown_event = threading.Event()
 log_lock = threading.Lock()  # Thread lock for synchronized logging
+detector_lock = threading.Lock()  # Thread lock for detector access (not thread-safe)
 batch_counter = 0  # Counter for batch IDs
 
 # Configuration from environment
@@ -195,8 +196,6 @@ def process_batch(message_data: dict) -> dict:
     device_id = message_data.get('device_id', 'unknown')
     readings = message_data.get('readings', [])
     
-    print(f"[DEBUG] process_batch: device={device_id}, readings={len(readings)}")
-    
     if not readings:
         return {'device_id': device_id, 'readings': [], 'error': 'No readings provided'}
     
@@ -207,24 +206,16 @@ def process_batch(message_data: dict) -> dict:
     anomaly_count = 0
     batch_size = len(readings)
     
-    print(f"[DEBUG] About to enter carbon tracking context")
-    
     # Use carbon tracking context manager if available
     if carbon_monitor:
         with carbon_monitor.track_inference(batch_size=batch_size):
-            print(f"[DEBUG] Inside carbon context, calling _process_readings_batch")
             results, anomaly_count = _process_readings_batch(readings, device_id, detector, monitor)
-            print(f"[DEBUG] _process_readings_batch returned")
     else:
         results, anomaly_count = _process_readings_batch(readings, device_id, detector, monitor)
-    
-    print(f"[DEBUG] Getting stats")
     
     # Summary logging (only anomalies and carbon stats, rest is logged by message_callback)
     stats = detector.get_stats()
     carbon_stats = carbon_monitor.get_stats() if carbon_monitor else {}
-    
-    print(f"[DEBUG] Building return dict")
     
     # Only log anomalies if any detected
     if anomaly_count > 0:
@@ -248,6 +239,7 @@ def process_batch(message_data: dict) -> dict:
 
 def _process_readings_batch(readings, device_id, detector, monitor):
     """Process readings batch - extracted for carbon tracking."""
+    global detector_lock
     results = []
     anomaly_count = 0
     anomaly_details = []
@@ -257,8 +249,9 @@ def _process_readings_batch(readings, device_id, detector, monitor):
         vibration = reading.get('vibration', reading.get('value', 0.0))
         
         try:
-            # Run hybrid detection
-            detection = detector.detect(vibration)
+            # Run hybrid detection (serialize access - detector is not thread-safe)
+            with detector_lock:
+                detection = detector.detect(vibration)
             
             is_anomaly = detection['is_anomaly']
             confidence = detection.get('confidence', 0.0)
