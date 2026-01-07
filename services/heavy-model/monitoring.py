@@ -23,6 +23,8 @@ class AnomalyMonitor:
     
     METRIC_TYPE = "custom.googleapis.com/anomaly_detection/rate"
     WINDOW_SECONDS = 60
+    # Minimum interval between metric writes (Google Cloud requires monotonically increasing timestamps)
+    MIN_METRIC_INTERVAL_SECONDS = 10
     
     def __init__(self, project_id: str):
         """
@@ -39,6 +41,9 @@ class AnomalyMonitor:
         # Rolling window for anomaly rate calculation
         self._anomaly_times = deque()
         self._lock = threading.Lock()
+        
+        # Track last metric write timestamp to avoid "out of order" errors
+        self._last_metric_write_time = 0
         
         # Statistics
         self.total_anomalies = 0
@@ -137,9 +142,7 @@ class AnomalyMonitor:
             # Calculate rate (anomalies per minute)
             anomaly_rate = len(self._anomaly_times)
         
-        # Only log if there are anomalies to report
-        if anomaly_rate > 0:
-            print(f"[Monitor] Anomaly rate: {anomaly_rate}/min (last 60s)")
+        print(f"[Monitor] Anomaly rate: {anomaly_rate}/min (last 60s)")
         
         # Export to Cloud Monitoring
         if self._monitoring_client:
@@ -155,6 +158,14 @@ class AnomalyMonitor:
         if not self._monitoring_client:
             return
         
+        # Ensure minimum interval between writes to avoid "out of order" errors
+        now = time.time()
+        with self._lock:
+            if now - self._last_metric_write_time < self.MIN_METRIC_INTERVAL_SECONDS:
+                # Skip this write - too soon after the last one
+                return
+            self._last_metric_write_time = now
+        
         try:
             from google.cloud import monitoring_v3
             
@@ -164,7 +175,6 @@ class AnomalyMonitor:
             series.metric.type = self.METRIC_TYPE
             series.resource.type = "global"
             
-            now = time.time()
             seconds = int(now)
             nanos = int((now - seconds) * 10**9)
             
@@ -193,13 +203,16 @@ class AnomalyMonitor:
                     if attempt < max_retries and "504" in str(retry_err):
                         # Retry on 504 errors
                         continue
+                    elif "must be written in order" in str(retry_err).lower():
+                        # Skip timestamp ordering errors - expected during rapid shutdown
+                        break
                     else:
                         # Give up after retries
                         raise retry_err
             
         except Exception as e:
-            # Silently ignore metric write errors - not critical for operation
-            pass
+            # Log metric write errors but don't fail - not critical for operation
+            print(f"[Monitor] Failed to write metric: {e}")
     
     def log_anomaly(
         self,
@@ -217,11 +230,11 @@ class AnomalyMonitor:
             confidence: Model confidence score (0-1)
             device_id: Device identifier
         """
-        self.total_anomalies += 1
-        
-        # Add to rolling window
+        # Add to rolling window and increment counter atomically
         with self._lock:
+            self.total_anomalies += 1
             self._anomaly_times.append(time.time())
+            current_total = self.total_anomalies
         
         # Create structured log entry
         log_entry = {
@@ -230,7 +243,7 @@ class AnomalyMonitor:
             'device_id': device_id,
             'vibration': vibration,
             'confidence': confidence,
-            'total_anomalies': self.total_anomalies
+            'total_anomalies': current_total
         }
         
         # Log to Cloud Logging or stdout
@@ -262,7 +275,8 @@ class AnomalyMonitor:
         Args:
             device_id: Device identifier
         """
-        self.total_readings += 1
+        with self._lock:
+            self.total_readings += 1
     
     def get_stats(self) -> dict:
         """Get current monitoring statistics."""
@@ -286,8 +300,14 @@ class AnomalyMonitor:
         """Flush any pending logs/metrics and stop the reporter."""
         self._running = False
         
-        # Final metric report
+        # Wait for reporter thread to stop to avoid concurrent writes
+        if self._reporter_thread and self._reporter_thread.is_alive():
+            self._reporter_thread.join(timeout=2.0)
+        
+        # Final metric report (will skip if too soon after last write)
         self._report_anomaly_rate()
+        
+        print("[Monitor] Flushed and stopped")
         
         # Flush Cloud Logging
         if self._logging_client:

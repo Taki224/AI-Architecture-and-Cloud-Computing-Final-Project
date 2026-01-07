@@ -342,6 +342,9 @@ def message_callback(message):
     global batch_counter
     
     try:
+        # Acknowledge immediately to prevent redelivery during long processing
+        message.ack()
+        
         # Decode message
         data = json.loads(message.data.decode('utf-8'))
         
@@ -368,15 +371,6 @@ def message_callback(message):
                   f"({processing_time_ms/reading_count:.1f} ms/reading) | "
                   f"Anomalies: {results.get('anomalies_detected', 0)}/{reading_count} | "
                   f"Published: {'✓' if publish_success else '✗'}")
-        
-        # Only acknowledge after successful processing and publishing
-        if publish_success or results.get('error'):
-            message.ack()
-        else:
-            # Don't ack - will be redelivered
-            with log_lock:
-                print(f"[Batch #{batch_id}] ⚠ NOT acknowledged - will retry")
-            message.nack()
             
     except json.JSONDecodeError as e:
         print(f"✗ Invalid JSON in message: {e}")
