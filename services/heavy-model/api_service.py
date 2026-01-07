@@ -411,25 +411,31 @@ def start_subscriber():
         print("✗ Subscriber not initialized")
         return None
     
+    print(f"\n[Subscriber] start_subscriber() called")
+    print(f"[Subscriber] Current worker_thread: {worker_thread}")
+    print(f"[Subscriber] Current processing_queue: {processing_queue}")
+    
     # Initialize processing queue ONCE (if not already initialized)
     if processing_queue is None:
         import queue
         processing_queue = queue.Queue()
-        print(f"[Subscriber] Initialized processing queue")
+        print(f"[Subscriber] ✓ Initialized processing queue: {id(processing_queue)}")
+    else:
+        print(f"[Subscriber] ℹ Using existing queue: {id(processing_queue)}")
     
     # Start worker thread ONCE (if not already running)
     if worker_thread is None or not worker_thread.is_alive():
         import threading
         worker_thread = threading.Thread(target=process_messages_worker, daemon=True, name="MessageWorker")
         worker_thread.start()
-        print(f"[Subscriber] Started sequential message processing worker (Thread-{worker_thread.ident})")
+        print(f"[Subscriber] ✓ Started worker thread: {worker_thread.ident}")
     else:
-        print(f"[Subscriber] Worker thread already running (Thread-{worker_thread.ident})")
+        print(f"[Subscriber] ℹ Worker thread already running: {worker_thread.ident}")
     
     subscription_path = subscriber.subscription_path(PROJECT_ID, SENSOR_SUBSCRIPTION)
     
-    print(f"\n[Subscriber] Listening on {subscription_path}...")
-    print(f"[Subscriber] Mode: Queue-based sequential processing")
+    print(f"[Subscriber] Listening on {subscription_path}...")
+    print(f"[Subscriber] Mode: Queue-based sequential processing\n")
     
     # Configure flow control - messages go to queue, worker processes sequentially
     flow_control = pubsub_v1.types.FlowControl(
