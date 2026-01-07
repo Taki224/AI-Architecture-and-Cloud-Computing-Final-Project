@@ -324,8 +324,13 @@ def message_callback(message):
     """
     global batch_counter, batch_semaphore
     
+    import threading
+    thread_id = threading.current_thread().ident
+    print(f"[Thread-{thread_id}] Attempting to acquire semaphore...")
+    
     # Block here until no other batch is processing - this is THE critical section
     batch_semaphore.acquire()
+    print(f"[Thread-{thread_id}] Semaphore acquired!")
     
     try:
         # Decode message
@@ -339,7 +344,7 @@ def message_callback(message):
         batch_id = batch_counter
         
         print(f"\n{'='*60}")
-        print(f"[Batch #{batch_id}] Received {reading_count} readings from {device_id}")
+        print(f"[Batch #{batch_id} / Thread-{thread_id}] Received {reading_count} readings from {device_id}")
         print(f"{'='*60}")
         
         # Process through heavy model
@@ -373,7 +378,9 @@ def message_callback(message):
     
     finally:
         # Always release semaphore to allow next batch
+        print(f"[Thread-{thread_id}] Releasing semaphore...")
         batch_semaphore.release()
+        print(f"[Thread-{thread_id}] Semaphore released!")
 
 
 def start_subscriber():
