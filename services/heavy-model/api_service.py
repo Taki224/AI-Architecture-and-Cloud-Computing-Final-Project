@@ -201,68 +201,11 @@ def process_batch(message_data: dict) -> dict:
     batch_size = len(readings)
     
     # Use carbon tracking context manager if available
-    carbon_context = carbon_monitor.track_inference(batch_size=batch_size) if carbon_monitor else None
-    
-    try:
-        if carbon_context:
-            carbon_context.__enter__()
-        
-        for reading in readings:
-            timestamp = reading.get('timestamp', datetime.utcnow().timestamp())
-            vibration = reading.get('vibration', reading.get('value', 0.0))
-            
-            try:
-                # Run hybrid detection
-                detection = detector.detect(vibration)
-                
-                is_anomaly = detection['is_anomaly']
-                confidence = detection.get('confidence', 0.0)
-                anomaly_score = detection.get('anomaly_score', 0.0)
-                z_score = detection.get('z_score', 0.0)
-                method = detection.get('method', 'unknown')
-                
-                result = {
-                    'timestamp': float(timestamp),
-                    'vibration': float(vibration),
-                    'is_anomaly': bool(is_anomaly),
-                    'confidence': float(confidence),
-                    'anomaly_score': float(anomaly_score),
-                    'z_score': float(z_score),
-                    'method': str(method),
-                    'ml_anomaly': bool(detection.get('ml_anomaly', False)),
-                    'stat_anomaly': bool(detection.get('stat_anomaly', False))
-                }
-                results.append(result)
-                
-                if is_anomaly:
-                    anomaly_count += 1
-                    print(f"🚨 ANOMALY | Device: {device_id} | Value: {vibration:7.4f} | "
-                          f"Method: {method} | Score: {anomaly_score:.4f} | Z: {z_score:.2f}")
-                    
-                    # Log to Cloud Monitoring
-                    if monitor:
-                        monitor.log_anomaly(
-                            timestamp=timestamp,
-                            vibration=vibration,
-                            confidence=confidence,
-                            device_id=device_id
-                        )
-                else:
-                    print(f"✓ Normal  | Device: {device_id} | Value: {vibration:7.4f} | Z: {z_score:.2f}")
-                
-            except Exception as e:
-                print(f"✗ Error processing reading: {e}")
-                results.append({
-                    'timestamp': timestamp,
-                    'vibration': vibration,
-                    'is_anomaly': False,
-                    'confidence': 0.0,
-                    'error': str(e)
-                })
-    finally:
-        # Exit carbon tracking context
-        if carbon_context:
-            carbon_context.__exit__(None, None, None)
+    if carbon_monitor:
+        with carbon_monitor.track_inference(batch_size=batch_size):
+            results, anomaly_count = _process_readings_batch(readings, device_id, detector, monitor)
+    else:
+        results, anomaly_count = _process_readings_batch(readings, device_id, detector, monitor)
     
     # Summary logging
     stats = detector.get_stats()
@@ -278,6 +221,74 @@ def process_batch(message_data: dict) -> dict:
     
     return {
         'device_id': device_id,
+        'readings': results,
+        'count': len(results),
+        'anomalies_detected': anomaly_count,
+        'ml_fitted': stats.get('ml_fitted', False),
+        'carbon_emissions_gco2e': carbon_stats.get('total_emissions_gco2e', 0) if carbon_stats else None,
+        'processed_at': datetime.utcnow().isoformat()
+    }
+
+
+def _process_readings_batch(readings, device_id, detector, monitor):
+    """Process readings batch - extracted for carbon tracking."""
+    results = []
+    anomaly_count = 0
+    
+    for reading in readings:
+        timestamp = reading.get('timestamp', datetime.utcnow().timestamp())
+        vibration = reading.get('vibration', reading.get('value', 0.0))
+        
+        try:
+            # Run hybrid detection
+            detection = detector.detect(vibration)
+            
+            is_anomaly = detection['is_anomaly']
+            confidence = detection.get('confidence', 0.0)
+            anomaly_score = detection.get('anomaly_score', 0.0)
+            z_score = detection.get('z_score', 0.0)
+            method = detection.get('method', 'unknown')
+            
+            result = {
+                'timestamp': float(timestamp),
+                'vibration': float(vibration),
+                'is_anomaly': bool(is_anomaly),
+                'confidence': float(confidence),
+                'anomaly_score': float(anomaly_score),
+                'z_score': float(z_score),
+                'method': str(method),
+                'ml_anomaly': bool(detection.get('ml_anomaly', False)),
+                'stat_anomaly': bool(detection.get('stat_anomaly', False))
+            }
+            results.append(result)
+            
+            if is_anomaly:
+                anomaly_count += 1
+                print(f"🚨 ANOMALY | Device: {device_id} | Value: {vibration:7.4f} | "
+                      f"Method: {method} | Score: {anomaly_score:.4f} | Z: {z_score:.2f}")
+                
+                # Log to Cloud Monitoring
+                if monitor:
+                    monitor.log_anomaly(
+                        timestamp=timestamp,
+                        vibration=vibration,
+                        confidence=confidence,
+                        device_id=device_id
+                    )
+            else:
+                print(f"✓ Normal  | Device: {device_id} | Value: {vibration:7.4f} | Z: {z_score:.2f}")
+            
+        except Exception as e:
+            print(f"✗ Error processing reading: {e}")
+            results.append({
+                'timestamp': timestamp,
+                'vibration': vibration,
+                'is_anomaly': False,
+                'confidence': 0.0,
+                'error': str(e)
+            })
+    
+    return results, anomaly_count
         'readings': results,
         'count': len(results),
         'anomalies_detected': anomaly_count,

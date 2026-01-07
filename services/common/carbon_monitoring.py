@@ -165,18 +165,23 @@ class CarbonMonitor:
         self._running = True
         self._reporter_thread = threading.Thread(target=self._report_loop, daemon=True)
         self._reporter_thread.start()
+        print(f"[CarbonMonitor] Background reporter thread started (daemon={self._reporter_thread.daemon})")
     
     def _report_loop(self):
         """Background loop that reports aggregated metrics periodically."""
+        print(f"[CarbonMonitor] Reporter thread started, will report every {self.REPORT_INTERVAL}s")
         while self._running:
             time.sleep(self.REPORT_INTERVAL)
             if self._running:
+                print(f"[CarbonMonitor] Reporter waking up to flush metrics...")
                 self._flush_pending_metrics()
     
     def _flush_pending_metrics(self):
         """Flush pending emissions to Cloud Monitoring."""
         with self._lock:
+            print(f"[CarbonMonitor] Checking pending metrics: {self._pending_emissions_kg:.6f} kg, {self._pending_inferences} inferences")
             if self._pending_emissions_kg <= 0 and self._pending_inferences <= 0:
+                print(f"[CarbonMonitor] No pending metrics to report, skipping")
                 return
             
             emissions_to_report = self._pending_emissions_kg
@@ -279,19 +284,19 @@ class CarbonMonitor:
                         time_series=[series],
                         timeout=5.0  # Shorter timeout for faster failures
                     )
+                    print(f"[CarbonMonitor] ✓ Wrote metric {metric_type.split('/')[-1]}: {value}")
                     break  # Success
                 except Exception as retry_err:
                     if attempt < max_retries and "504" in str(retry_err):
-                        # Retry on 504 errors
+                        print(f"[CarbonMonitor] Retry {attempt+1}/{max_retries} for {metric_type.split('/')[-1]} due to 504")
                         continue
                     else:
                         # Give up after retries
                         raise retry_err
             
         except Exception as e:
-            # Silently skip 504 errors to avoid log spam
-            if "504" not in str(e):
-                print(f"[CarbonMonitor] Failed to write metric {metric_type}: {e}")
+            # Log all errors for debugging
+            print(f"[CarbonMonitor] ✗ Failed to write metric {metric_type.split('/')[-1]}: {e}")
     
     @contextmanager
     def track_inference(self, batch_size: int = 1):
@@ -337,6 +342,9 @@ class CarbonMonitor:
                 self.total_inferences += batch_size
                 self._pending_emissions_kg += emissions_kg
                 self._pending_inferences += batch_size
+                
+                print(f"[CarbonMonitor] Accumulated: pending={self._pending_emissions_kg:.9f} kg, "
+                      f"total={self.total_emissions_kg:.9f} kg, inferences={self.total_inferences}")
             
             # Log if significant
             if emissions_kg > 0:
