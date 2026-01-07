@@ -60,7 +60,7 @@ subscriber = None
 monitor = None
 carbon_monitor = None
 shutdown_event = threading.Event()
-batch_semaphore = threading.Semaphore(1)  # Only allow 1 batch at a time
+processing_queue = None  # Queue for sequential message processing
 batch_counter = 0  # Counter for batch IDs
 
 # Configuration from environment
@@ -316,101 +316,125 @@ def publish_results(results: dict):
 def message_callback(message):
     """
     Callback for processing incoming Pub/Sub messages.
-    Uses semaphore to block ALL other callbacks until this one completes.
-    ACKs only after complete processing.
+    Queues messages for sequential processing by dedicated worker thread.
     
     Args:
         message: Pub/Sub message object
     """
-    global batch_counter, batch_semaphore
+    global processing_queue
     
     import threading
     thread_id = threading.current_thread().ident
-    print(f"[Thread-{thread_id}] Attempting to acquire semaphore...")
+    print(f"[Thread-{thread_id}] Message received, adding to queue...")
     
-    # Block here until no other batch is processing - this is THE critical section
-    batch_semaphore.acquire()
-    print(f"[Thread-{thread_id}] Semaphore acquired!")
+    # Add message to queue - worker thread will process sequentially
+    processing_queue.put(message)
+    print(f"[Thread-{thread_id}] Message queued")
+
+
+def process_messages_worker():
+    """Worker thread that processes messages sequentially from the queue."""
+    global batch_counter, processing_queue, shutdown_event
     
-    try:
-        # Decode message
-        data = json.loads(message.data.decode('utf-8'))
-        
-        device_id = data.get('device_id', 'unknown')
-        reading_count = data.get('count', len(data.get('readings', [])))
-        
-        # Assign batch ID for tracking
-        batch_counter += 1
-        batch_id = batch_counter
-        
-        print(f"\n{'='*60}")
-        print(f"[Batch #{batch_id} / Thread-{thread_id}] Received {reading_count} readings from {device_id}")
-        print(f"{'='*60}")
-        
-        # Process through heavy model
-        start_time = time.perf_counter()
-        results = process_batch(data)
-        processing_time_ms = (time.perf_counter() - start_time) * 1000
-        
-        # Publish results
-        print(f"  Publishing results to anomaly-results topic...")
-        publish_success = publish_results(results)
-        
-        # Summary
-        print(f"\n[Batch #{batch_id}] COMPLETE")
-        print(f"  Time: {processing_time_ms:.1f} ms ({processing_time_ms/reading_count:.1f} ms/reading)")
-        print(f"  Anomalies: {results.get('anomalies_detected', 0)}/{reading_count}")
-        print(f"  Published: {'✓' if publish_success else '✗'}")
-        print(f"{'='*60}\n")
-        
-        # Acknowledge AFTER processing completes
-        message.ack()
+    import threading
+    worker_thread_id = threading.current_thread().ident
+    print(f"[Worker-{worker_thread_id}] Started sequential processing worker")
+    
+    while not shutdown_event.is_set():
+        try:
+            # Block waiting for next message (1 second timeout to check shutdown)
+            message = processing_queue.get(timeout=1.0)
             
-    except json.JSONDecodeError as e:
-        print(f"✗ Invalid JSON in message: {e}")
-        message.ack()
-        
-    except Exception as e:
-        print(f"✗ Error processing message: {e}")
-        import traceback
-        traceback.print_exc()
-        message.ack()
+            print(f"[Worker-{worker_thread_id}] Processing message...")
+            
+            try:
+                # Decode message
+                data = json.loads(message.data.decode('utf-8'))
+                
+                device_id = data.get('device_id', 'unknown')
+                reading_count = data.get('count', len(data.get('readings', [])))
+                
+                # Assign batch ID for tracking
+                batch_counter += 1
+                batch_id = batch_counter
+                
+                print(f"\n{'='*60}")
+                print(f"[Batch #{batch_id}] Received {reading_count} readings from {device_id}")
+                print(f"{'='*60}")
+                
+                # Process through heavy model
+                start_time = time.perf_counter()
+                results = process_batch(data)
+                processing_time_ms = (time.perf_counter() - start_time) * 1000
+                
+                # Publish results
+                print(f"  Publishing results to anomaly-results topic...")
+                publish_success = publish_results(results)
+                
+                # Summary
+                print(f"\n[Batch #{batch_id}] COMPLETE")
+                print(f"  Time: {processing_time_ms:.1f} ms ({processing_time_ms/reading_count:.1f} ms/reading)")
+                print(f"  Anomalies: {results.get('anomalies_detected', 0)}/{reading_count}")
+                print(f"  Published: {'✓' if publish_success else '✗'}")
+                print(f"{'='*60}\n")
+                
+                # Acknowledge AFTER processing completes
+                message.ack()
+                    
+            except json.JSONDecodeError as e:
+                print(f"✗ Invalid JSON in message: {e}")
+                message.ack()
+                
+            except Exception as e:
+                print(f"✗ Error processing message: {e}")
+                import traceback
+                traceback.print_exc()
+                message.ack()
+            
+            finally:
+                # Mark task as done in queue
+                processing_queue.task_done()
+                
+        except Exception:
+            # Queue.get() timeout - normal, just check shutdown and loop
+            continue
     
-    finally:
-        # Always release semaphore to allow next batch
-        print(f"[Thread-{thread_id}] Releasing semaphore...")
-        batch_semaphore.release()
-        print(f"[Thread-{thread_id}] Semaphore released!")
+    print(f"[Worker-{worker_thread_id}] Shutting down")
 
 
 def start_subscriber():
-    """Start the Pub/Sub subscriber with automatic stream restart on timeout."""
-    global subscriber
+    """Start the Pub/Sub subscriber with dedicated worker thread for sequential processing."""
+    global subscriber, processing_queue
     
     if subscriber is None:
         print("✗ Subscriber not initialized")
         return None
     
+    # Initialize processing queue
+    import queue
+    processing_queue = queue.Queue()
+    
+    # Start worker thread for sequential processing
+    import threading
+    worker_thread = threading.Thread(target=process_messages_worker, daemon=True, name="MessageWorker")
+    worker_thread.start()
+    print(f"[Subscriber] Started sequential message processing worker")
+    
     subscription_path = subscriber.subscription_path(PROJECT_ID, SENSOR_SUBSCRIPTION)
     
     print(f"\n[Subscriber] Listening on {subscription_path}...")
-    print(f"[Subscriber] Mode: Sequential (1 batch at a time)")
+    print(f"[Subscriber] Mode: Queue-based sequential processing")
     
-    # Configure flow control: only 1 message at a time for sequential processing
+    # Configure flow control - messages go to queue, worker processes sequentially
     flow_control = pubsub_v1.types.FlowControl(
-        max_messages=1,  # Process exactly 1 batch at a time - fully sequential
+        max_messages=1,  # Limit outstanding messages
         max_bytes=10 * 1024 * 1024,  # 10 MB
     )
-    
-    # Use a single-threaded executor to ensure truly sequential processing
-    from concurrent.futures import ThreadPoolExecutor
-    executor = ThreadPoolExecutor(max_workers=1)
     
     streaming_pull_future = subscriber.subscribe(
         subscription_path,
         callback=message_callback,
-        flow_control=flow_control,
-        scheduler=pubsub_v1.subscriber.scheduler.ThreadScheduler(executor=executor)
+        flow_control=flow_control
     )
     
     return streaming_pull_future
