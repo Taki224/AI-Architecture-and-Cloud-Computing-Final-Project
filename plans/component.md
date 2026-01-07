@@ -17,18 +17,26 @@ flowchart TB
 
     subgraph LightService[Light Model Service]
         LightAPI[Flask REST API]
-        LightDetector[HybridDetector 100est]
+        LightDetector[IsolationForestDetector<br/>50 estimators]
+        LightCarbon[CarbonMonitor ECO]
     end
 
     subgraph HeavyService[Heavy Model Service]
         HeavySubscriber[PubSub Subscriber]
-        HeavyDetector[HybridDetector 200est]
+        HeavyDetector[HybridDetector<br/>200 estimators]
         HeavyPublisher[PubSub Publisher]
+        HeavyCarbon[CarbonMonitor PERF]
+        AnomalyMon[AnomalyMonitor]
     end
 
     subgraph Messaging[Message Broker]
-        SensorTopic[sensor-readings]
+        SensorTopic[sensor-data]
         AnomalyTopic[anomaly-results]
+    end
+
+    subgraph CloudObservability[GCP Observability]
+        CloudMonitoring[Cloud Monitoring<br/>Custom Metrics]
+        CloudLogging[Cloud Logging<br/>Structured Logs]
     end
 
     GUI <--> Controller
@@ -39,13 +47,21 @@ flowchart TB
     LightAPI --> LightDetector
     LightDetector --> LightAPI
     LightAPI -->|JSON response| Controller
+    LightDetector --> LightCarbon
+    LightCarbon -->|carbon metrics| CloudMonitoring
 
     EdgePubSub -->|publish batch| SensorTopic
     SensorTopic --> HeavySubscriber
     HeavySubscriber --> HeavyDetector
     HeavyDetector --> HeavyPublisher
+    HeavyDetector --> HeavyCarbon
+    HeavyDetector --> AnomalyMon
     HeavyPublisher --> AnomalyTopic
     AnomalyTopic -->|predictions| EdgePubSub
+    
+    HeavyCarbon -->|carbon metrics| CloudMonitoring
+    AnomalyMon -->|anomaly rate| CloudMonitoring
+    AnomalyMon -->|structured logs| CloudLogging
 ```
 
 **Component Details:**
@@ -56,9 +72,11 @@ flowchart TB
 | Controller | - | Mode switching: PERFORMANCE or ECO |
 | Sensor | - | Gaussian noise (mean=0, std=1), 10 Hz |
 | PubSubClient | - | Batches 10 readings for cloud |
-| Light API | 5001 | Flask REST: /analyze, /health |
-| Light Detector | - | 100 estimators + Z-score |
-| Heavy Detector | 8080 | 200 estimators + Z-score |
+| Light API | 5001 | Flask REST: /analyze, /health, /stats, /reset |
+| Light Detector | - | IsolationForest (50 estimators) + Z-score |
+| Heavy Detector | 8080 | HybridDetector (200 estimators IF + Z-score) |
+| CarbonMonitor | - | Per-inference carbon tracking, GCP metrics export |
+| AnomalyMonitor | - | 60s rolling window rate, Cloud Logging integration |
 
 ---
 
@@ -105,6 +123,8 @@ flowchart TB
 | HybridAnomalyDetector | `models/hybrid_detector.py` | Ensemble detector orchestration |
 | IsolationForestDetector | `models/isolation_forest_detector.py` | Online-trained Isolation Forest |
 | StatisticalAnomalyDetector | `models/statistical_model.py` | Z-score threshold detector |
+| CarbonMonitor | `services/common/carbon_monitoring.py` | Carbon emissions tracking and GCP export |
+| AnomalyMonitor | `services/heavy-model/monitoring.py` | Anomaly rate calculation and Cloud Logging |
 
 ---
 
@@ -131,5 +151,5 @@ flowchart TB
 
 | Topic | Direction | Message Format |
 |-------|-----------|----------------|
-| `sensor-readings` | Edge to Cloud | `{"device_id": str, "readings": [...], "batch_id": str}` |
+| `sensor-data` | Edge to Cloud | `{"device_id": str, "readings": [...], "batch_id": str}` |
 | `anomaly-results` | Cloud to Edge | `{"batch_id": str, "predictions": [...], "ml_fitted": bool}` |

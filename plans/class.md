@@ -41,11 +41,11 @@ classDiagram
     }
 
     class PubSubClient {
-        -project_id: "local-project"
+        -project_id: str
         -device_id: "edge-001"
         -batch_size: 10
         -publish_timeout: 5 seconds
-        -sensor_topic: "sensor-readings"
+        -sensor_topic: "sensor-data"
         -anomaly_subscription: "anomaly-results-sub"
         +add_to_batch(reading)
         +flush_batch()
@@ -115,10 +115,23 @@ classDiagram
     class AnomalyMonitor {
         -window_size: 60 seconds
         -metric_name: "anomaly_detection/rate"
+        -project_id: str
         +record_prediction(is_anomaly)
         +get_anomaly_rate(): float
         +log_to_cloud(message)
         +push_metric(value)
+    }
+
+    class CarbonMonitor {
+        -project_id: str
+        -service_name: "heavy-model" | "light-model"
+        -mode: "PERFORMANCE" | "ECO"
+        -total_emissions_kg: float
+        -total_inferences: int
+        +track_inference(batch_size, inference_time_ms)
+        +get_stats(): dict
+        +flush()
+        -_write_metric(metric_type, value)
     }
 
     %% Relationships
@@ -127,13 +140,17 @@ classDiagram
     CarbonAwareController --> PubSubClient : uses for PERFORMANCE
     CarbonAwareController --> LightModelAPI : calls for ECO
     
-    LightModelAPI --> HybridAnomalyDetector : uses
+    LightModelAPI --> IsolationForestDetector : uses
+    LightModelAPI --> CarbonMonitor : tracks emissions
     HeavyModelService --> HybridAnomalyDetector : uses
+    HeavyModelService --> CarbonMonitor : tracks emissions
     
     HybridAnomalyDetector --> IsolationForestDetector : ML detection
     HybridAnomalyDetector --> StatisticalAnomalyDetector : statistical fallback
     
     HeavyModelService --> AnomalyMonitor : reports to
+    CarbonMonitor ..> CloudMonitoring : exports metrics
+    AnomalyMonitor ..> CloudMonitoring : exports metrics
     PubSubClient ..> HeavyModelService : via Pub/Sub
 ```
 
@@ -214,10 +231,10 @@ classDiagram
 
 ## Model Configuration
 
-| Model | Location | Estimators | Window | Contamination | Warmup |
-|-------|----------|------------|--------|---------------|--------|
-| Light (ECO) | Docker :5001 | 100 | 50 | 0.003 | 100 samples |
-| Heavy (Cloud) | Cloud Run :8080 | 200 | 50 | 0.003 | 100 samples |
+| Model | Location | Detector Type | Estimators | Window | Contamination | Warmup |
+|-------|----------|---------------|------------|--------|---------------|--------|
+| Light (ECO) | Docker :5001 | IsolationForestDetector | 50 | 50 | 0.10 | 100 samples |
+| Heavy (PERF) | Cloud Run :8080 | HybridAnomalyDetector | 200 | 50 | 0.003 | 100 samples |
 
 | Detection Method | Threshold | Fallback | Ensemble Logic |
 |------------------|-----------|----------|----------------|

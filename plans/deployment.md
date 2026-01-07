@@ -14,16 +14,20 @@ flowchart TB
 
     subgraph GCP[Google Cloud Platform]
         subgraph PubSub[Cloud Pub/Sub]
-            SensorTopic[sensor-readings]
+            SensorTopic[sensor-data]
             AnomalyTopic[anomaly-results]
         end
 
         subgraph CloudRun[Cloud Run]
-            HeavyService[heavy-model-service]
+            HeavyService[heavy-model-service<br/>HybridDetector<br/>CarbonMonitor<br/>AnomalyMonitor]
         end
 
-        Logging[Cloud Logging]
-        Monitoring[Cloud Monitoring]
+        subgraph Observability[Observability]
+            Logging[Cloud Logging<br/>Structured JSON]
+            Monitoring[Cloud Monitoring<br/>Custom Metrics]
+            Dashboard[Monitoring Dashboard<br/>Carbon & Anomaly Metrics]
+        end
+        
         Registry[Artifact Registry]
     end
 
@@ -31,8 +35,9 @@ flowchart TB
     SensorTopic --> HeavyService
     HeavyService --> AnomalyTopic
     AnomalyTopic -->|pull results| EdgeApp
-    HeavyService --> Logging
-    HeavyService --> Monitoring
+    HeavyService -->|structured logs| Logging
+    HeavyService -->|carbon metrics<br/>anomaly rate| Monitoring
+    Monitoring --> Dashboard
     Registry -.->|deploy| HeavyService
 ```
 
@@ -55,19 +60,24 @@ flowchart TB
         EdgeApp[local_sensor_gui.py]
         
         subgraph Docker[Docker Compose]
-            Emulator[pubsub-emulator]
-            LightService[light-model-service]
-            HeavyService[heavy-model-service]
+            LightService[light-model-service<br/>IsolationForestDetector<br/>CarbonMonitor ECO]
+        end
+        
+        subgraph CloudResources[GCP Cloud Resources]
+            PubSub[Cloud Pub/Sub<br/>sensor-data<br/>anomaly-results]
+            HeavyCloud[heavy-model-service<br/>Cloud Run]
+            Monitoring[Cloud Monitoring<br/>Dashboard]
         end
     end
 
     EdgeApp -->|ECO mode| LightService
-    EdgeApp -->|PERF mode| Emulator
-    Emulator --> HeavyService
-    HeavyService --> Emulator
-    Emulator --> EdgeApp
-    LightService -.-> Emulator
-    HeavyService -.-> Emulator
+    EdgeApp -->|PERF mode| PubSub
+    PubSub --> HeavyCloud
+    HeavyCloud --> PubSub
+    PubSub --> EdgeApp
+    
+    LightService -->|carbon metrics| Monitoring
+    HeavyCloud -->|carbon metrics<br/>anomaly rate| Monitoring
 ```
 
 **Local Container Configuration:**
