@@ -223,6 +223,7 @@ def process_batch(message_data: dict) -> dict:
     
     results = []
     anomaly_count = 0
+    total_inference_time_ms = 0.0  # Track total time for carbon estimation
     
     # Process each reading one by one
     for i, reading in enumerate(readings, 1):
@@ -236,6 +237,7 @@ def process_batch(message_data: dict) -> dict:
             t_start = time.perf_counter()
             detection = detector.detect(vibration)
             t_detect = (time.perf_counter() - t_start) * 1000
+            total_inference_time_ms += t_detect
             print(f"    [TIMING] detect() took {t_detect:.1f}ms")
             
             is_anomaly = detection['is_anomaly']
@@ -288,8 +290,9 @@ def process_batch(message_data: dict) -> dict:
     # Track carbon after all readings processed
     if carbon_monitor:
         print(f"  Tracking carbon emissions for {batch_size} inferences...")
-        with carbon_monitor.track_inference(batch_size=batch_size):
-            pass  # Just tracking the batch
+        print(f"  Total inference time: {total_inference_time_ms:.1f}ms ({total_inference_time_ms/batch_size:.1f}ms/reading)")
+        with carbon_monitor.track_inference(batch_size=batch_size, inference_time_ms=total_inference_time_ms):
+            pass  # Carbon tracked based on actual inference time
         print(f"  ✓ Carbon tracked")
     
     # Get stats

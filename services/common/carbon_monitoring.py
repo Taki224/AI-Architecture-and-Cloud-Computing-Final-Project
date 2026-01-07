@@ -297,16 +297,17 @@ class CarbonMonitor:
         threading.Thread(target=write_async, daemon=True).start()
     
     @contextmanager
-    def track_inference(self, batch_size: int = 1):
+    def track_inference(self, batch_size: int = 1, inference_time_ms: float = None):
         """
         Context manager to track carbon emissions for an inference operation.
         
         Usage:
-            with carbon_monitor.track_inference(batch_size=10):
-                results = model.predict(batch)
+            with carbon_monitor.track_inference(batch_size=10, inference_time_ms=1500):
+                pass  # Already tracked
         
         Args:
             batch_size: Number of samples in this inference batch
+            inference_time_ms: Actual measured inference time in milliseconds (optional)
             
         Yields:
             None (CodeCarbon disabled for cloud - uses estimation)
@@ -348,9 +349,17 @@ class CarbonMonitor:
             
             # Use estimation-based calculation (more reliable in cloud environments)
             # Based on typical cloud vCPU: ~15W TDP, ~0.1 kgCO2e/kWh (low-carbon grid)
-            # Estimate: ~0.000005 gCO2e per inference
+            # Per-inference estimate: Power * Time * Grid_Intensity
             if emissions_kg == 0 or emissions_kg is None:
-                emissions_kg = 0.000000005 * batch_size
+                VCPU_POWER_W = 15.0  # Typical cloud vCPU power
+                GRID_INTENSITY_KG_PER_KWH = 0.1  # Finland low-carbon grid
+                
+                # Use actual measured inference time if provided, else default to 10s
+                inference_time_s = (inference_time_ms / 1000.0) if inference_time_ms else 10.0
+                
+                # Energy = Power * Time (convert to kWh)
+                energy_kwh = (VCPU_POWER_W * inference_time_s) / 3600  # Wh to kWh
+                emissions_kg = energy_kwh * GRID_INTENSITY_KG_PER_KWH
             
             # Update totals
             with self._lock:
